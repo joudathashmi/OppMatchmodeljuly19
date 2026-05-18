@@ -1,0 +1,28 @@
+# Local secrets — never commit
+.env
+
+# Python / OS
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Generated pipeline outputs
+Output/*.pkl
+Output/*.xlsx
+
+# Bulk data, exports, temp Office files (keep repo code-only)
+*.xlsx
+*.xls
+*.csv
+*.pkl
+*.docx
+*.pdf
+~$*
+Data/
+strategicinvestor*/
+
+# Local tool config
+.claude/
+
+# Ad-hoc logs
+_run_output.log

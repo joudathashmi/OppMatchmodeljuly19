@@ -1,0 +1,1377 @@
+{
+  "180": {
+    "canonical": "Professional Services",
+    "synonyms": [
+      "Consulting",
+      "Advisory Services"
+    ],
+    "sub_domains": [
+      "Accounting",
+      "Legal Services",
+      "Management Consulting"
+    ],
+    "adjacent_domains": [
+      "Finance",
+      "Marketing",
+      "Human Resources"
+    ]
+  },
+  "Accounting & Consulting, Advertising and Public Relations, Legal": {
+    "canonical": "Accounting & Consulting, Advertising and Public Relations, Legal",
+    "synonyms": [],
+    "sub_domains": [],
+    "adjacent_domains": []
+  },
+  "Advertising Services": {
+    "canonical": "Advertising",
+    "synonyms": [
+      "Ad Services",
+      "Marketing Communications"
+    ],
+    "sub_domains": [
+      "Digital Advertising",
+      "Media Buying",
+      "Creative Services"
+    ],
+    "adjacent_domains": [
+      "Public Relations",
+      "Market Research",
+      "Brand Management"
+    ]
+  },
+  "Advisory": {
+    "canonical": "Advisory Services",
+    "synonyms": [
+      "Consulting",
+      "Advisory"
+    ],
+    "sub_domains": [
+      "Financial Advisory",
+      "Risk Management",
+      "Strategic Consulting"
+    ],
+    "adjacent_domains": [
+      "Investment Banking",
+      "Corporate Finance",
+      "Legal Services"
+    ]
+  },
+  "Aerospace": {
+    "canonical": "Aerospace",
+    "synonyms": [
+      "Aviation",
+      "Aircraft Industry"
+    ],
+    "sub_domains": [
+      "Aircraft Manufacturing",
+      "Spacecraft Development",
+      "Aerospace Components"
+    ],
+    "adjacent_domains": [
+      "Defense",
+      "Transportation",
+      "Engineering Services"
+    ]
+  },
+  "Aerospace and Defense": {
+    "canonical": "Aerospace & Defense",
+    "synonyms": [
+      "A&D",
+      "Defense Industry"
+    ],
+    "sub_domains": [
+      "Military Aircraft",
+      "Defense Systems",
+      "Aerospace Engineering"
+    ],
+    "adjacent_domains": [
+      "Government Contracts",
+      "Cybersecurity",
+      "Logistics"
+    ]
+  },
+  "Aerospace and Defense, Air Transport": {
+    "canonical": "Aerospace & Air Transport",
+    "synonyms": [
+      "A&D Air Transport"
+    ],
+    "sub_domains": [
+      "Commercial Aviation",
+      "Cargo Transport",
+      "Air Traffic Management"
+    ],
+    "adjacent_domains": [
+      "Logistics",
+      "Travel Services",
+      "Airport Operations"
+    ]
+  },
+  "Aerospace, Aviation & Defense": {
+    "canonical": "Aerospace & Aviation",
+    "synonyms": [
+      "A&D Aviation"
+    ],
+    "sub_domains": [
+      "Aviation Safety",
+      "Flight Operations",
+      "Aircraft Maintenance"
+    ],
+    "adjacent_domains": [
+      "Airlines",
+      "Manufacturing",
+      "Regulatory Bodies"
+    ]
+  },
+  "Aircraft Manufacturing": {
+    "canonical": "Aircraft Manufacturing",
+    "synonyms": [
+      "Aircraft Production",
+      "Plane Manufacturing"
+    ],
+    "sub_domains": [
+      "Commercial Aircraft",
+      "Military Aircraft",
+      "General Aviation"
+    ],
+    "adjacent_domains": [
+      "Aerospace Components",
+      "Supply Chain Management",
+      "Engineering Services"
+    ]
+  },
+  "Ammunitions": {
+    "canonical": "Ammunitions",
+    "synonyms": [
+      "Munitions",
+      "Ordnance"
+    ],
+    "sub_domains": [
+      "Small Arms Ammunition",
+      "Artillery Shells",
+      "Explosives"
+    ],
+    "adjacent_domains": [
+      "Defense",
+      "Manufacturing",
+      "Logistics"
+    ]
+  },
+  "Asset Management": {
+    "canonical": "Asset Management",
+    "synonyms": [
+      "Investment Management",
+      "Portfolio Management"
+    ],
+    "sub_domains": [
+      "Wealth Management",
+      "Fund Management",
+      "Real Estate Investment"
+    ],
+    "adjacent_domains": [
+      "Banking",
+      "Financial Services",
+      "Insurance"
+    ]
+  },
+  "Aviation and Aerospace Component Manufacturing": {
+    "canonical": "Aviation Component Manufacturing",
+    "synonyms": [
+      "Aerospace Parts Manufacturing"
+    ],
+    "sub_domains": [
+      "Engine Components",
+      "Avionics",
+      "Structural Components"
+    ],
+    "adjacent_domains": [
+      "Aerospace",
+      "Manufacturing",
+      "Supply Chain Management"
+    ]
+  },
+  "Banking": {
+    "canonical": "Banking",
+    "synonyms": [
+      "Financial Institutions",
+      "Commercial Banking"
+    ],
+    "sub_domains": [
+      "Retail Banking",
+      "Investment Banking",
+      "Corporate Banking"
+    ],
+    "adjacent_domains": [
+      "Finance",
+      "Insurance",
+      "Asset Management"
+    ]
+  },
+  "Building Construction": {
+    "canonical": "Building Construction",
+    "synonyms": [
+      "Construction",
+      "Real Estate Development"
+    ],
+    "sub_domains": [
+      "Residential Construction",
+      "Commercial Construction",
+      "Infrastructure Development"
+    ],
+    "adjacent_domains": [
+      "Architecture",
+      "Engineering",
+      "Real Estate"
+    ]
+  },
+  "Business Consultancy/Life Sciences/Energy/Education": {
+    "canonical": "Business Consultancy",
+    "synonyms": [
+      "Consulting Services"
+    ],
+    "sub_domains": [
+      "Life Sciences Consulting",
+      "Energy Consulting",
+      "Education Consulting"
+    ],
+    "adjacent_domains": [
+      "Healthcare",
+      "Energy",
+      "Education"
+    ]
+  },
+  "Business Consulting and Services": {
+    "canonical": "Business Consulting",
+    "synonyms": [
+      "Consulting Services"
+    ],
+    "sub_domains": [
+      "Management Consulting",
+      "IT Consulting",
+      "Human Resources Consulting"
+    ],
+    "adjacent_domains": [
+      "Finance",
+      "Marketing",
+      "Operations"
+    ]
+  },
+  "Chemical Manufacturing": {
+    "canonical": "Chemical Manufacturing",
+    "synonyms": [
+      "Chemicals Production",
+      "Chemical Industry"
+    ],
+    "sub_domains": [
+      "Basic Chemicals",
+      "Specialty Chemicals",
+      "Pharmaceutical Chemicals"
+    ],
+    "adjacent_domains": [
+      "Pharmaceuticals",
+      "Materials Science",
+      "Environmental Services"
+    ]
+  },
+  "Chemicals": {
+    "canonical": "Chemicals",
+    "synonyms": [
+      "Chemical Industry"
+    ],
+    "sub_domains": [
+      "Industrial Chemicals",
+      "Consumer Chemicals",
+      "Agricultural Chemicals"
+    ],
+    "adjacent_domains": [
+      "Manufacturing",
+      "Pharmaceuticals",
+      "Environmental Services"
+    ]
+  },
+  "Compressors/Hydraulic Equipment": {
+    "canonical": "Compressors & Hydraulic Equipment",
+    "synonyms": [
+      "Hydraulic Systems",
+      "Compressors"
+    ],
+    "sub_domains": [
+      "Pneumatic Equipment",
+      "Hydraulic Pumps",
+      "Compressors Manufacturing"
+    ],
+    "adjacent_domains": [
+      "Industrial Equipment",
+      "Manufacturing",
+      "Construction"
+    ]
+  },
+  "Construction": {
+    "canonical": "Construction",
+    "synonyms": [
+      "Building",
+      "Infrastructure Development"
+    ],
+    "sub_domains": [
+      "Residential Construction",
+      "Commercial Construction",
+      "Civil Engineering"
+    ],
+    "adjacent_domains": [
+      "Architecture",
+      "Real Estate",
+      "Engineering"
+    ]
+  },
+  "Construction + Holding Company": {
+    "canonical": "Construction Holding",
+    "synonyms": [
+      "Construction Management"
+    ],
+    "sub_domains": [
+      "Real Estate Development",
+      "Project Management",
+      "Construction Services"
+    ],
+    "adjacent_domains": [
+      "Real Estate",
+      "Finance",
+      "Investment"
+    ]
+  },
+  "Consumer Market": {
+    "canonical": "Consumer Market",
+    "synonyms": [
+      "Consumer Goods",
+      "Retail Market"
+    ],
+    "sub_domains": [
+      "Retail",
+      "E-commerce",
+      "Consumer Electronics"
+    ],
+    "adjacent_domains": [
+      "Marketing",
+      "Supply Chain",
+      "Manufacturing"
+    ]
+  },
+  "Consumer Markets": {
+    "canonical": "Consumer Markets",
+    "synonyms": [
+      "Consumer Goods",
+      "Retail"
+    ],
+    "sub_domains": [
+      "Food & Beverage",
+      "Apparel",
+      "Electronics"
+    ],
+    "adjacent_domains": [
+      "Marketing",
+      "E-commerce",
+      "Manufacturing"
+    ]
+  },
+  "Cosmetics": {
+    "canonical": "Cosmetics",
+    "synonyms": [
+      "Beauty Products",
+      "Personal Care"
+    ],
+    "sub_domains": [
+      "Skincare",
+      "Makeup",
+      "Fragrances"
+    ],
+    "adjacent_domains": [
+      "Retail",
+      "Pharmaceuticals",
+      "Chemical Manufacturing"
+    ]
+  },
+  "Defence and Space Manufacturing": {
+    "canonical": "Defence & Space",
+    "synonyms": [
+      "Defense Manufacturing",
+      "Aerospace Manufacturing"
+    ],
+    "sub_domains": [
+      "Aerospace Engineering",
+      "Military Equipment Manufacturing",
+      "Satellite Manufacturing"
+    ],
+    "adjacent_domains": [
+      "Defense Services",
+      "Cybersecurity",
+      "Logistics & Supply Chain"
+    ]
+  },
+  "Defense Manufacturing": {
+    "canonical": "Defense Manufacturing",
+    "synonyms": [],
+    "sub_domains": [],
+    "adjacent_domains": []
+  },
+  "Defense and Space Manufacturing": {
+    "canonical": "Defense and Space Manufacturing",
+    "synonyms": [],
+    "sub_domains": [],
+    "adjacent_domains": []
+  },
+  "Department Stores": {
+    "canonical": "Retail",
+    "synonyms": [
+      "Dept Stores",
+      "Retail Chains"
+    ],
+    "sub_domains": [
+      "E-commerce",
+      "Consumer Electronics",
+      "Fashion Retail"
+    ],
+    "adjacent_domains": [
+      "Wholesale Trade",
+      "Logistics",
+      "Marketing & Advertising"
+    ]
+  },
+  "Diversified": {
+    "canonical": "Diversified",
+    "synonyms": [],
+    "sub_domains": [],
+    "adjacent_domains": []
+  },
+  "Education Management": {
+    "canonical": "Education",
+    "synonyms": [
+      "Ed Management",
+      "Educational Administration"
+    ],
+    "sub_domains": [
+      "K-12 Education",
+      "Higher Education",
+      "Vocational Training"
+    ],
+    "adjacent_domains": [
+      "EdTech",
+      "Corporate Training",
+      "Non-Profit Organizations"
+    ]
+  },
+  "Educational": {
+    "canonical": "Educational",
+    "synonyms": [],
+    "sub_domains": [],
+    "adjacent_domains": []
+  },
+  "Emerging Sector": {
+    "canonical": "Emerging Sector",
+    "synonyms": [],
+    "sub_domains": [],
+    "adjacent_domains": []
+  },
+  "Energy & Water": {
+    "canonical": "Energy & Water",
+    "synonyms": [
+      "Energy Sector",
+      "Water Management"
+    ],
+    "sub_domains": [
+      "Renewable Energy",
+      "Water Treatment",
+      "Energy Storage"
+    ],
+    "adjacent_domains": [
+      "Utilities",
+      "Environmental Services",
+      "CleanTech"
+    ]
+  },
+  "Engineering": {
+    "canonical": "Engineering",
+    "synonyms": [
+      "Engineering Services",
+      "Engineering Consulting"
+    ],
+    "sub_domains": [
+      "Civil Engineering",
+      "Mechanical Engineering",
+      "Electrical Engineering"
+    ],
+    "adjacent_domains": [
+      "Construction",
+      "Manufacturing",
+      "Project Management"
+    ]
+  },
+  "Engineering & Construction": {
+    "canonical": "Engineering & Construction",
+    "synonyms": [],
+    "sub_domains": [],
+    "adjacent_domains": []
+  },
+  "Engineering & Construction, Industrial & Logistics": {
+    "canonical": "Engineering & Construction, Industrial & Logistics",
+    "synonyms": [],
+    "sub_domains": [],
+    "adjacent_domains": []
+  },
+  "Entertainment": {
+    "canonical": "Entertainment",
+    "synonyms": [
+      "Media",
+      "Leisure"
+    ],
+    "sub_domains": [
+      "Film Production",
+      "Video Games",
+      "Live Events"
+    ],
+    "adjacent_domains": [
+      "Marketing",
+      "Tourism",
+      "Television Broadcasting"
+    ]
+  },
+  "Event Management": {
+    "canonical": "Event Management",
+    "synonyms": [],
+    "sub_domains": [],
+    "adjacent_domains": []
+  },
+  "Financial Services": {
+    "canonical": "Finance",
+    "synonyms": [
+      "FinServ",
+      "Banking"
+    ],
+    "sub_domains": [
+      "Investment Banking",
+      "Insurance",
+      "Wealth Management"
+    ],
+    "adjacent_domains": [
+      "FinTech",
+      "Real Estate",
+      "Accounting"
+    ]
+  },
+  "Freight and Package Transportation": {
+    "canonical": "Logistics",
+    "synonyms": [
+      "Freight Transport",
+      "Package Delivery"
+    ],
+    "sub_domains": [
+      "Air Freight",
+      "Ocean Freight",
+      "Last-Mile Delivery"
+    ],
+    "adjacent_domains": [
+      "Supply Chain Management",
+      "Warehousing",
+      "E-commerce"
+    ]
+  },
+  "Healthcare and Life Sciences": {
+    "canonical": "Healthcare",
+    "synonyms": [
+      "Health Sciences",
+      "Life Sciences"
+    ],
+    "sub_domains": [
+      "Pharmaceuticals",
+      "Biotechnology",
+      "Medical Devices"
+    ],
+    "adjacent_domains": [
+      "Healthcare IT",
+      "Clinical Research",
+      "Public Health"
+    ]
+  },
+  "ICT Hardware": {
+    "canonical": "ICT",
+    "synonyms": [
+      "Information Technology Hardware",
+      "Tech Hardware"
+    ],
+    "sub_domains": [
+      "Computers",
+      "Networking Equipment",
+      "Consumer Electronics"
+    ],
+    "adjacent_domains": [
+      "Software Development",
+      "Telecommunications",
+      "Cloud Computing"
+    ]
+  },
+  "Industrial & Logistics": {
+    "canonical": "Industrial Logistics",
+    "synonyms": [
+      "Industrial Supply Chain",
+      "Logistics Services"
+    ],
+    "sub_domains": [
+      "Warehousing",
+      "Distribution",
+      "Inventory Management"
+    ],
+    "adjacent_domains": [
+      "Manufacturing",
+      "Transportation",
+      "Retail"
+    ]
+  },
+  "Industrial Manufacturing": {
+    "canonical": "Manufacturing",
+    "synonyms": [
+      "Industrial Production",
+      "Heavy Manufacturing"
+    ],
+    "sub_domains": [
+      "Machinery Manufacturing",
+      "Automotive Manufacturing",
+      "Electronics Manufacturing"
+    ],
+    "adjacent_domains": [
+      "Supply Chain",
+      "Engineering",
+      "Quality Control"
+    ]
+  },
+  "Information and Communication Technology": {
+    "canonical": "ICT",
+    "synonyms": [
+      "Information Technology",
+      "Telecommunications"
+    ],
+    "sub_domains": [
+      "Software Development",
+      "Networking",
+      "Cybersecurity"
+    ],
+    "adjacent_domains": [
+      "Data Analytics",
+      "Cloud Services",
+      "E-commerce"
+    ]
+  },
+  "Insurance": {
+    "canonical": "Insurance",
+    "synonyms": [
+      "InsurTech",
+      "Risk Management"
+    ],
+    "sub_domains": [
+      "Life Insurance",
+      "Property Insurance",
+      "Health Insurance"
+    ],
+    "adjacent_domains": [
+      "Financial Services",
+      "Legal Services",
+      "Healthcare"
+    ]
+  },
+  "International Trade & Development": {
+    "canonical": "Trade & Development",
+    "synonyms": [
+      "Global Trade",
+      "Economic Development"
+    ],
+    "sub_domains": [
+      "Export-Import Services",
+      "Trade Policy",
+      "Development Aid"
+    ],
+    "adjacent_domains": [
+      "Logistics",
+      "Finance",
+      "Government"
+    ]
+  },
+  "Machine Manufacturing": {
+    "canonical": "Machinery",
+    "synonyms": [
+      "Machine Production",
+      "Equipment Manufacturing"
+    ],
+    "sub_domains": [
+      "Industrial Machinery",
+      "Construction Equipment",
+      "Agricultural Machinery"
+    ],
+    "adjacent_domains": [
+      "Manufacturing",
+      "Engineering",
+      "Supply Chain"
+    ]
+  },
+  "Machine Tool Manufacturing": {
+    "canonical": "Machine Tools",
+    "synonyms": [
+      "Tool Manufacturing",
+      "Machining Tools"
+    ],
+    "sub_domains": [
+      "CNC Machining",
+      "Tooling and Fixtures",
+      "Precision Engineering"
+    ],
+    "adjacent_domains": [
+      "Machinery",
+      "Manufacturing",
+      "Industrial Equipment"
+    ]
+  },
+  "Machinery": {
+    "canonical": "Machinery",
+    "synonyms": [
+      "Industrial Machinery"
+    ],
+    "sub_domains": [
+      "Construction Machinery",
+      "Agricultural Machinery",
+      "Material Handling Equipment"
+    ],
+    "adjacent_domains": [
+      "Machine Tool Manufacturing",
+      "Manufacturing",
+      "Heavy Equipment"
+    ]
+  },
+  "Machinery and Industrial Goods, Transportation and Shipping": {
+    "canonical": "Industrial Goods",
+    "synonyms": [
+      "Industrial Equipment",
+      "Transport Machinery"
+    ],
+    "sub_domains": [
+      "Logistics Equipment",
+      "Shipping Containers",
+      "Industrial Vehicles"
+    ],
+    "adjacent_domains": [
+      "Transportation",
+      "Machinery",
+      "Manufacturing"
+    ]
+  },
+  "Management Consulting": {
+    "canonical": "Consulting",
+    "synonyms": [
+      "Management Advisory"
+    ],
+    "sub_domains": [
+      "Strategy Consulting",
+      "Operations Consulting",
+      "Human Resources Consulting"
+    ],
+    "adjacent_domains": [
+      "Business Services",
+      "Financial Consulting",
+      "IT Consulting"
+    ]
+  },
+  "Management Consulting Services": {
+    "canonical": "Consulting Services",
+    "synonyms": [
+      "Advisory Services"
+    ],
+    "sub_domains": [
+      "Business Strategy",
+      "Change Management",
+      "Performance Improvement"
+    ],
+    "adjacent_domains": [
+      "Management Consulting",
+      "Business Services",
+      "Financial Services"
+    ]
+  },
+  "Manufacturing": {
+    "canonical": "Manufacturing",
+    "synonyms": [
+      "Production"
+    ],
+    "sub_domains": [
+      "Assembly Manufacturing",
+      "Process Manufacturing",
+      "Custom Manufacturing"
+    ],
+    "adjacent_domains": [
+      "Machine Tool Manufacturing",
+      "Machinery",
+      "Industrial Mfg"
+    ]
+  },
+  "Manufacturing (Fabricated Products)": {
+    "canonical": "Fabricated Products",
+    "synonyms": [
+      "Fabrication Manufacturing"
+    ],
+    "sub_domains": [
+      "Metal Fabrication",
+      "Plastic Fabrication",
+      "Composite Manufacturing"
+    ],
+    "adjacent_domains": [
+      "Manufacturing",
+      "Metal Products",
+      "Machinery"
+    ]
+  },
+  "Manufacturing Military Vehicles": {
+    "canonical": "Military Vehicles",
+    "synonyms": [
+      "Defense Manufacturing"
+    ],
+    "sub_domains": [
+      "Armored Vehicles",
+      "Ammunition Manufacturing",
+      "Military Equipment"
+    ],
+    "adjacent_domains": [
+      "Manufacturing",
+      "Aerospace",
+      "Defense"
+    ]
+  },
+  "Marketing and Advertising": {
+    "canonical": "Marketing",
+    "synonyms": [
+      "Ad Services"
+    ],
+    "sub_domains": [
+      "Digital Marketing",
+      "Brand Management",
+      "Market Research"
+    ],
+    "adjacent_domains": [
+      "Media",
+      "Public Relations",
+      "Consulting"
+    ]
+  },
+  "Mechanical Or Industrial Engineering": {
+    "canonical": "Engineering",
+    "synonyms": [
+      "Mechanical Engineering"
+    ],
+    "sub_domains": [
+      "Systems Engineering",
+      "Manufacturing Engineering",
+      "Process Engineering"
+    ],
+    "adjacent_domains": [
+      "Machinery",
+      "Consulting",
+      "Industrial Design"
+    ]
+  },
+  "Mechanical Power Transmission Equipment Manufacturing": {
+    "canonical": "Power Transmission",
+    "synonyms": [
+      "Transmission Equipment"
+    ],
+    "sub_domains": [
+      "Gear Manufacturing",
+      "Belt Drives",
+      "Couplings"
+    ],
+    "adjacent_domains": [
+      "Machinery",
+      "Manufacturing",
+      "Industrial Equipment"
+    ]
+  },
+  "MedTech": {
+    "canonical": "Medical Technology",
+    "synonyms": [
+      "Healthcare Technology"
+    ],
+    "sub_domains": [
+      "Diagnostic Devices",
+      "Therapeutic Equipment",
+      "Health IT"
+    ],
+    "adjacent_domains": [
+      "Healthcare",
+      "Medical Equipment Manufacturing",
+      "Pharma"
+    ]
+  },
+  "Medical Equipment Manufacturing": {
+    "canonical": "Medical Equipment",
+    "synonyms": [
+      "Healthcare Equipment"
+    ],
+    "sub_domains": [
+      "Surgical Instruments",
+      "Diagnostic Equipment",
+      "Patient Monitoring Devices"
+    ],
+    "adjacent_domains": [
+      "MedTech",
+      "Healthcare",
+      "Manufacturing"
+    ]
+  },
+  "Metal Products": {
+    "canonical": "Metal Products",
+    "synonyms": [
+      "Metal Fabrication"
+    ],
+    "sub_domains": [
+      "Steel Products",
+      "Aluminum Products",
+      "Metal Components"
+    ],
+    "adjacent_domains": [
+      "Manufacturing",
+      "Machinery",
+      "Mining"
+    ]
+  },
+  "Mining": {
+    "canonical": "Mining",
+    "synonyms": [
+      "Mineral Extraction"
+    ],
+    "sub_domains": [
+      "Coal Mining",
+      "Metal Mining",
+      "Oil Sands Extraction"
+    ],
+    "adjacent_domains": [
+      "Metal Products",
+      "Machinery",
+      "Energy"
+    ]
+  },
+  "Mining & Metal": {
+    "canonical": "Mining and Metals",
+    "synonyms": [
+      "Mining and Metal Production"
+    ],
+    "sub_domains": [
+      "Mineral Processing",
+      "Metal Refining",
+      "Mining Equipment"
+    ],
+    "adjacent_domains": [
+      "Mining",
+      "Metal Products",
+      "Manufacturing"
+    ]
+  },
+  "Mixed Retailing": {
+    "canonical": "Retail",
+    "synonyms": [
+      "Retailing"
+    ],
+    "sub_domains": [
+      "Department Stores",
+      "E-commerce",
+      "Specialty Retail"
+    ],
+    "adjacent_domains": [
+      "Wholesale",
+      "Marketing",
+      "Consumer Goods"
+    ]
+  },
+  "Motion Picture/Video Production": {
+    "canonical": "Film Production",
+    "synonyms": [
+      "Video Production"
+    ],
+    "sub_domains": [
+      "Film Editing",
+      "Post-Production",
+      "Animation"
+    ],
+    "adjacent_domains": [
+      "Media",
+      "Marketing",
+      "Entertainment"
+    ]
+  },
+  "Motor Vehicle Manufacturing": {
+    "canonical": "Automotive Manufacturing",
+    "synonyms": [
+      "Vehicle Production"
+    ],
+    "sub_domains": [
+      "Passenger Vehicles",
+      "Commercial Vehicles",
+      "Electric Vehicles"
+    ],
+    "adjacent_domains": [
+      "Manufacturing",
+      "Machinery",
+      "Transportation"
+    ]
+  },
+  "Oil and Gas": {
+    "canonical": "Energy",
+    "synonyms": [
+      "Oil & Gas Industry"
+    ],
+    "sub_domains": [
+      "Exploration",
+      "Refining",
+      "Distribution"
+    ],
+    "adjacent_domains": [
+      "Energy",
+      "Mining",
+      "Manufacturing"
+    ]
+  },
+  "Oil, Gas, Energy & Water": {
+    "canonical": "Energy and Water",
+    "synonyms": [
+      "Energy Sector"
+    ],
+    "sub_domains": [
+      "Water Treatment",
+      "Renewable Energy",
+      "Hydrocarbon Processing"
+    ],
+    "adjacent_domains": [
+      "Oil and Gas",
+      "Utilities",
+      "Environmental Services"
+    ]
+  },
+  "Oil/Gas Field Machinery/Other Professional, Scientific, and Technical Services": {
+    "canonical": "Oil Field Services",
+    "synonyms": [
+      "Oil and Gas Services"
+    ],
+    "sub_domains": [
+      "Drilling Equipment",
+      "Reservoir Engineering",
+      "Geophysical Services"
+    ],
+    "adjacent_domains": [
+      "Oil and Gas",
+      "Machinery",
+      "Engineering Services"
+    ]
+  },
+  "Passenger Airlines": {
+    "canonical": "Airlines",
+    "synonyms": [
+      "Air Travel"
+    ],
+    "sub_domains": [
+      "Commercial Aviation",
+      "Charter Services",
+      "Cargo Airlines"
+    ],
+    "adjacent_domains": [
+      "Transportation",
+      "Travel Services",
+      "Logistics"
+    ]
+  },
+  "Pet Food": {
+    "canonical": "Pet Products",
+    "synonyms": [
+      "Pet Nutrition"
+    ],
+    "sub_domains": [
+      "Dry Pet Food",
+      "Wet Pet Food",
+      "Pet Treats"
+    ],
+    "adjacent_domains": [
+      "Consumer Goods",
+      "Retail",
+      "Agriculture"
+    ]
+  },
+  "Petroleum Refining": {
+    "canonical": "Refining",
+    "synonyms": [
+      "Oil Refining",
+      "Petrochemical Processing"
+    ],
+    "sub_domains": [
+      "Crude Oil Processing",
+      "Petrochemical Production",
+      "Fuel Distribution"
+    ],
+    "adjacent_domains": [
+      "Petroleum Exploration",
+      "Natural Gas Processing",
+      "Chemical Manufacturing"
+    ]
+  },
+  "Pharma & Biotech": {
+    "canonical": "Biopharma",
+    "synonyms": [
+      "Pharmaceutical Biotechnology",
+      "Biopharmaceuticals"
+    ],
+    "sub_domains": [
+      "Biologics",
+      "Gene Therapy",
+      "Vaccine Development"
+    ],
+    "adjacent_domains": [
+      "Life Sciences",
+      "Healthcare",
+      "Diagnostics"
+    ]
+  },
+  "Pharmaceutical": {
+    "canonical": "Pharma",
+    "synonyms": [
+      "Pharmaceuticals",
+      "Drug Manufacturing"
+    ],
+    "sub_domains": [
+      "Generic Drugs",
+      "Prescription Medications",
+      "Over-the-Counter Drugs"
+    ],
+    "adjacent_domains": [
+      "Biotech",
+      "Healthcare",
+      "MedTech"
+    ]
+  },
+  "Professional Services": {
+    "canonical": "Consulting",
+    "synonyms": [
+      "Advisory Services",
+      "Business Services"
+    ],
+    "sub_domains": [
+      "Management Consulting",
+      "Legal Services",
+      "Accounting Services"
+    ],
+    "adjacent_domains": [
+      "IT Services",
+      "Marketing Services",
+      "Human Resources"
+    ]
+  },
+  "Pump Manufacturing": {
+    "canonical": "Pumps",
+    "synonyms": [
+      "Pump Production",
+      "Fluid Handling Equipment"
+    ],
+    "sub_domains": [
+      "Industrial Pumps",
+      "Submersible Pumps",
+      "Centrifugal Pumps"
+    ],
+    "adjacent_domains": [
+      "Valves Manufacturing",
+      "Compressor Manufacturing",
+      "Fluid Dynamics"
+    ]
+  },
+  "Quality of Life": {
+    "canonical": "Wellness",
+    "synonyms": [
+      "Quality of Life Services",
+      "Lifestyle Improvement"
+    ],
+    "sub_domains": [
+      "Health and Wellness",
+      "Urban Development",
+      "Community Services"
+    ],
+    "adjacent_domains": [
+      "Healthcare",
+      "Tourism",
+      "Education"
+    ]
+  },
+  "Renewable Energy Semiconductor Manufacturing": {
+    "canonical": "Renewable Semiconductors",
+    "synonyms": [
+      "Green Tech Semiconductors",
+      "Solar Cell Manufacturing"
+    ],
+    "sub_domains": [
+      "Photovoltaic Cells",
+      "Thin-Film Technology",
+      "Power Electronics"
+    ],
+    "adjacent_domains": [
+      "Renewable Energy",
+      "CleanTech",
+      "Energy Storage"
+    ]
+  },
+  "Restaurants": {
+    "canonical": "Dining",
+    "synonyms": [
+      "Food Services",
+      "Catering"
+    ],
+    "sub_domains": [
+      "Fast Food",
+      "Fine Dining",
+      "Caf\u00e9s"
+    ],
+    "adjacent_domains": [
+      "Food Production",
+      "Hospitality",
+      "Retail"
+    ]
+  },
+  "Retail Office Equipment": {
+    "canonical": "Office Supplies",
+    "synonyms": [
+      "Office Equipment Retail",
+      "Business Supplies"
+    ],
+    "sub_domains": [
+      "Printers and Copiers",
+      "Furniture",
+      "Stationery"
+    ],
+    "adjacent_domains": [
+      "Office Services",
+      "IT Equipment",
+      "Wholesale Distribution"
+    ]
+  },
+  "Security and Investigations": {
+    "canonical": "Security Services",
+    "synonyms": [
+      "Private Security",
+      "Investigative Services"
+    ],
+    "sub_domains": [
+      "Physical Security",
+      "Cybersecurity",
+      "Risk Management"
+    ],
+    "adjacent_domains": [
+      "Law Enforcement",
+      "Insurance",
+      "Consulting"
+    ]
+  },
+  "Shipbuilding": {
+    "canonical": "Maritime Construction",
+    "synonyms": [
+      "Ship Construction",
+      "Naval Engineering"
+    ],
+    "sub_domains": [
+      "Commercial Shipbuilding",
+      "Naval Shipbuilding",
+      "Repair and Maintenance"
+    ],
+    "adjacent_domains": [
+      "Marine Engineering",
+      "Logistics",
+      "Heavy Industry"
+    ]
+  },
+  "Smelting and Refining of Nonferrous Metals": {
+    "canonical": "Nonferrous Processing",
+    "synonyms": [
+      "Metal Refining",
+      "Metal Smelting"
+    ],
+    "sub_domains": [
+      "Aluminum Smelting",
+      "Copper Refining",
+      "Zinc Processing"
+    ],
+    "adjacent_domains": [
+      "Mining",
+      "Metal Fabrication",
+      "Recycling"
+    ]
+  },
+  "Tourisim & Quality of Life & Hospitality": {
+    "canonical": "Tourisim & Quality of Life & Hospitality",
+    "synonyms": [],
+    "sub_domains": [],
+    "adjacent_domains": []
+  },
+  "Tourism & Quality of Life & Hospitality": {
+    "canonical": "Tourism",
+    "synonyms": [
+      "Travel and Hospitality",
+      "Leisure Services"
+    ],
+    "sub_domains": [
+      "Travel Agencies",
+      "Hotel Management",
+      "Event Planning"
+    ],
+    "adjacent_domains": [
+      "Transportation",
+      "Cultural Services",
+      "Retail"
+    ]
+  },
+  "Transport & Logistics": {
+    "canonical": "Logistics",
+    "synonyms": [
+      "Transportation Services",
+      "Supply Chain Management"
+    ],
+    "sub_domains": [
+      "Freight Transportation",
+      "Warehousing",
+      "Distribution Services"
+    ],
+    "adjacent_domains": [
+      "Retail",
+      "Manufacturing",
+      "E-commerce"
+    ]
+  },
+  "Wholesellers": {
+    "canonical": "Wholesale Trade",
+    "synonyms": [
+      "Wholesale Distribution",
+      "Bulk Suppliers"
+    ],
+    "sub_domains": [
+      "Consumer Goods Wholesaling",
+      "Industrial Wholesaling",
+      "Food Wholesaling"
+    ],
+    "adjacent_domains": [
+      "Retail",
+      "Logistics",
+      "Manufacturing"
+    ]
+  },
+  "nan": {
+    "canonical": "N/A",
+    "synonyms": [
+      "N/A"
+    ],
+    "sub_domains": [
+      "N/A"
+    ],
+    "adjacent_domains": [
+      "N/A"
+    ]
+  },
+  "\u00e2\u02c6\u0161\u00c3\u00a6": {
+    "canonical": "\u00e2\u02c6\u0161\u00c3\u00a6",
+    "synonyms": [],
+    "sub_domains": [],
+    "adjacent_domains": []
+  }
+}

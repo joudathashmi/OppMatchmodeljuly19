@@ -1,0 +1,54 @@
+Company file    : kpmgfile.xlsx
+Opportunity file: opportunities_structured.xlsx
+  Structured opportunity schema detected (multi-signal triage inputs).
+  [Companies] Excel tabs merged: ['Company_Profiles'] → 3205 rows total
+  [Opportunities] Excel tabs merged: ['Sheet1'] → 12 rows total
+  [sector inference] All companies have non-blank Sector — nothing to infer.
+Loaded 3205 companies × 12 opportunities = 38460 candidate pairs (full Cartesian)
+  Company Name non-empty: 3205 / 3205 rows
+
+[Step 1/8] Preprocessing — normalizing text...
+[Step 2/8] Sector ontology expansion...
+  Ontology built for 90 unique sectors
+[Step 4a/8] Extracting product/capability entities (parallel + disk cache)...
+[Step 4/8] Building embeddings (text-embedding-ada-002, 1536-dim)...
+  Embedding chunks:   0%|          | 0/26 [00:00<?, ?it/s]  Embedding chunks:   4%|▍         | 1/26 [00:03<01:25,  3.42s/it]  Embedding chunks:  12%|█▏        | 3/26 [00:03<00:21,  1.07it/s]  Embedding chunks:  15%|█▌        | 4/26 [00:03<00:14,  1.48it/s]  Embedding chunks:  19%|█▉        | 5/26 [00:04<00:11,  1.83it/s]  Embedding chunks:  31%|███       | 8/26 [00:04<00:04,  3.84it/s]  Embedding chunks:  54%|█████▍    | 14/26 [00:04<00:01,  9.00it/s]  Embedding chunks:  65%|██████▌   | 17/26 [00:04<00:00, 10.07it/s]  Embedding chunks:  73%|███████▎  | 19/26 [00:04<00:00,  9.37it/s]  Embedding chunks:  92%|█████████▏| 24/26 [00:04<00:00, 13.27it/s]  Embedding chunks: 100%|██████████| 26/26 [00:08<00:00,  2.27it/s]                                                                     Embedding chunks:   0%|          | 0/26 [00:00<?, ?it/s]  Embedding chunks:   4%|▍         | 1/26 [00:01<00:31,  1.27s/it]  Embedding chunks:  27%|██▋       | 7/26 [00:01<00:03,  6.26it/s]  Embedding chunks:  42%|████▏     | 11/26 [00:01<00:01,  9.57it/s]  Embedding chunks:  54%|█████▍    | 14/26 [00:01<00:01, 10.29it/s]  Embedding chunks:  73%|███████▎  | 19/26 [00:01<00:00, 15.74it/s]  Embedding chunks:  85%|████████▍ | 22/26 [00:02<00:00, 10.57it/s]                                                                   [Steps 3+5/8] Multi-signal triage routing…
+/Users/joudathashmi/Documents/RHQOPPModel/SSDAMMModel3/business_grade_matching.py:305: RuntimeWarning: divide by zero encountered in matmul
+  raw = c @ o_t
+/Users/joudathashmi/Documents/RHQOPPModel/SSDAMMModel3/business_grade_matching.py:305: RuntimeWarning: overflow encountered in matmul
+  raw = c @ o_t
+/Users/joudathashmi/Documents/RHQOPPModel/SSDAMMModel3/business_grade_matching.py:305: RuntimeWarning: invalid value encountered in matmul
+  raw = c @ o_t
+  Total pairs: 38460; sent to GPT: 8761; filtered by triage: 29699
+  Triage signal hit counts (non-exclusive; pair can count in several): {'sector_overlap': 5065, 'value_chain_adjacent': 3592, 'input_overlap': 1121, 'signal_product_similarity': 3753, 'signal_profile_similarity': 126, 'capability_keywords': 147}
+[Step 6/8] GPT validation (analyst-grade Yes/No + narrative)...
+  GPT by opportunity:   0%|          | 0/12 [00:00<?, ?it/s]  GPT by opportunity:   8%|▊         | 1/12 [38:20<7:01:43, 2300.32s/it]  GPT by opportunity:  17%|█▋        | 2/12 [40:43<2:51:54, 1031.41s/it]  GPT by opportunity:  25%|██▌       | 3/12 [45:45<1:44:46, 698.46s/it]   GPT by opportunity:  33%|███▎      | 4/12 [45:52<56:42, 425.33s/it]    GPT by opportunity:  42%|████▏     | 5/12 [46:00<32:03, 274.86s/it]  GPT by opportunity:  50%|█████     | 6/12 [47:46<21:44, 217.37s/it]  GPT by opportunity:  58%|█████▊    | 7/12 [47:48<12:15, 147.13s/it]  GPT by opportunity:  67%|██████▋   | 8/12 [50:39<10:18, 154.59s/it]  GPT by opportunity:  75%|███████▌  | 9/12 [50:48<05:27, 109.00s/it]  GPT by opportunity:  83%|████████▎ | 10/12 [58:24<07:12, 216.21s/it]  GPT by opportunity:  92%|█████████▏| 11/12 [1:02:16<03:40, 220.96s/it]  GPT by opportunity: 100%|██████████| 12/12 [1:17:55<00:00, 439.45s/it]  GPT by opportunity: 100%|██████████| 12/12 [1:17:55<00:00, 389.60s/it]
+  Post–Step 6 checkpoint: Output/business_grade_post_step6.pkl (resume: --resume-from-step8)
+[Step 8/8] Final score and ranking...
+  Rank QA: opportunities with ordering ≠ (final_score↓, product↓): 0/12; where rank=1 not Yes but opp has ≥1 Yes: 0/12
+  Pre-export checkpoint: Output/business_grade_pre_export.pkl (use --resume-export if .xlsx fails)
+  Export columns (32): id, companyId, opportunityId, company_name, opportunity_name, company_profile, opportunity_description, company_sector, opportunity_sector, sector_similarity, ontology_sector_overlap, profile_similarity, product_similarity, ai_score, ai_decision, final_score, ai_explanation, rank, ai_insight, suggested_plan, match_reason, sector_was_inferred, sector_inference_source, sector_inference_evidence, signal_sector_overlap, signal_value_chain_adjacent, signal_capability_keyword_count, signal_input_overlap_count, signal_product_similarity, signal_profile_similarity, triage_pass, triage_reason
+
+Output saved : Output/business_grade_company_opportunity_matches.xlsx
+Total rows   : 38460
+
+ai_decision breakdown:
+  Filtered 29699
+  No    8044
+  Yes   717
+
+Yes matches: 448 with ontology sector-overlap signal + 269 without overlap signal (routing via multi-signal triage; see triage_reason)
+
+final_score percentiles:
+  p10: 0.515
+  p25: 0.521
+  p50: 0.528
+  p75: 0.538
+  p90: 0.548
+  p99: 0.859
+
+[Sector inference reconciliation]
+  Companies (distinct companyId) with inferred flag: 0
+  Workbook rows with blank Sector: 0; inferred rows: 0
+  Inferred-sector companies with ≥1 Yes pair: 0
+  Inferred-sector companies where all pairs are Filtered: 0

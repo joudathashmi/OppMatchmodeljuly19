@@ -1,0 +1,958 @@
+"""
+Company-Opportunity Matching Pipeline (v3 — analyst-grade)
+===========================================================
+
+Refined architecture beyond the 8-step flowchart, applying matching-system
+best practices and prompt-engineering techniques that actually move output
+quality on this kind of task.
+
+What changed from v2
+--------------------
+1. Embedding model bumped to `text-embedding-3-large` (3072-dim).
+   ada-002 is older; 3-large is materially better on industrial/business
+   text and roughly the same price.
+2. Hybrid retrieval: dense embedding + BM25 sparse score, blended.
+   Dense catches semantics ("desalination" ↔ "membrane filtration"),
+   sparse catches exact product/segment names ("Pentacam", "5G NR antenna").
+3. Three-signal scoring: profile_similarity, product_similarity, sparse_score.
+4. Richer GPT input: full company profile (no aggressive truncation), full
+   opportunity description, opportunity highlights/demand drivers/materials,
+   plus the structured-extracted entity lists.
+5. Few-shot examples in the prompt — one strong-Yes, one principled-No —
+   to anchor tone, specificity, and structure.
+6. New output fields demanded by users:
+     match_value      0-100 quantitative quality score from GPT
+     match_confidence Low | Medium | High
+     ai_decision      Yes | No        (kept)
+     ai_explanation   investment-memo paragraph (kept, sharpened)
+     ai_insight       non-obvious strategic angle (kept)
+     suggested_plan   3 sequenced concrete steps (kept, sharpened)
+     match_reason     3 evidence-cited reasons (kept)
+7. GPT decision happens on EVERY pair — no stub rows. Match-path label
+   (sector_overlap | soft_match | weak_overlap) is passed to the model
+   so it can calibrate, not skip.
+
+Output: Output/business_grade_company_opportunity_matches.xlsx
+Schema (20 columns):
+  id, companyId, opportunityId, company_name, opportunity_name,
+  company_sector, opportunity_sector,
+  sector_similarity, profile_similarity, product_similarity, sparse_score,
+  ai_score, ai_decision, match_value, match_confidence, final_score,
+  ai_explanation, rank, ai_insight, suggested_plan, match_reason
+
+final_score formula (kept compatible with reference MatchingOutput.csv):
+  final_score = 0.30 * ai_score + 0.30 * profile_similarity + 0.40 * product_similarity
+"""
+
+import json
+import math
+import os
+import re
+from typing import Dict, List, Set
+
+import numpy as np
+import pandas as pd
+from openai import OpenAI
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from tqdm import tqdm
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
+COMPANY_FILE_CANDIDATES = ["Companies.xlsx", "companies.xlsx", "Data/companies.xlsx"]
+OPPORTUNITY_FILE_CANDIDATES = [
+    "new_opportunities.xlsx",
+    "Data/new_opportunities.xlsx",
+    "Data/Opportunitiesfinalfile.xlsx",
+]
+OUTPUT_FILE = "Output/business_grade_company_opportunity_matches.xlsx"
+ONTOLOGY_CACHE_FILE = "Output/sector_ontology_cache.json"
+
+ONTOLOGY_MODEL   = "gpt-4o-mini"
+EXTRACTION_MODEL = "gpt-4o-mini"
+DECISION_MODEL   = "gpt-4.1"
+EMBEDDING_MODEL  = "text-embedding-3-large"   # better than ada-002 on this domain
+
+EXTRACT_BATCH  = 16
+DECISION_BATCH = 5
+
+SOFT_MATCH_THRESHOLD = 0.85    # Step 7 — cross-sector pairs admitted as adjacency
+SPARSE_NORM_K        = 1.5     # BM25-ish saturation parameter for sparse score
+
+# final_score weights — match the reference MatchingOutput.csv
+W_AI      = 0.30
+W_PROFILE = 0.30
+W_PRODUCT = 0.40
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def find_first_existing(paths: List[str]) -> str:
+    for p in paths:
+        if os.path.exists(p):
+            return p
+    raise FileNotFoundError(f"None of these files exist: {paths}")
+
+
+def safe_str(v) -> str:
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return ""
+    return str(v).strip()
+
+
+def preprocess(text) -> str:
+    s = safe_str(text).lower()
+    s = re.sub(r"[^\w\s]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def safe_cos(v1, v2) -> float:
+    try:
+        return max(0.0, float(cosine_similarity([v1], [v2])[0][0]))
+    except Exception:
+        return 0.0
+
+
+def to_list(v) -> List[str]:
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return [safe_str(x) for x in v if safe_str(x)]
+    return [safe_str(v)] if safe_str(v) else []
+
+
+def parse_json(text: str):
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```(?:json)?", "", t).strip()
+        t = re.sub(r"```$", "", t).strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        return None
+
+
+def call_json(client: OpenAI, model: str, system: str, payload: dict) -> dict:
+    rsp = client.chat.completions.create(
+        model=model,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": json.dumps(payload)},
+        ],
+    )
+    parsed = parse_json(rsp.choices[0].message.content or "")
+    if not parsed:
+        raise RuntimeError("GPT returned non-JSON response")
+    return parsed
+
+
+def embed_batch(client: OpenAI, texts: List[str], model: str) -> List[List[float]]:
+    out = []
+    bs = 128
+    for i in range(0, len(texts), bs):
+        chunk = [t if t.strip() else "n/a" for t in texts[i: i + bs]]
+        r = client.embeddings.create(model=model, input=chunk)
+        out.extend([d.embedding for d in r.data])
+    return out
+
+
+def find_id_column(df: pd.DataFrame, hint: str) -> str:
+    for cand in [hint, "id", "ID", "Id", f"{hint}_id", f"{hint}Id"]:
+        if cand in df.columns:
+            return cand
+    return ""
+
+
+def normalize_company_cols(df: pd.DataFrame) -> pd.DataFrame:
+    rmap = {
+        "Company Name": "company_name", "company name": "company_name",
+        "Company Profile": "company_profile", "company profile": "company_profile",
+        "Product/Services": "product_services",
+        "Product and Services": "product_services",
+        "product and Services": "product_services",
+        "product/services": "product_services",
+    }
+    df = df.rename(columns=rmap)
+    missing = [c for c in ["company_name", "company_profile", "product_services", "Sector"] if c not in df.columns]
+    if missing:
+        raise KeyError(f"Company data missing columns: {missing}")
+    return df
+
+
+def normalize_opp_cols(df: pd.DataFrame) -> pd.DataFrame:
+    required = [
+        "What is the opportunity name?",
+        "What is the opportunity description?",
+        "Sector",
+    ]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise KeyError(f"Opportunity data missing columns: {missing}")
+    return df
+
+
+def canonicalize_sector(s: str) -> str:
+    x = preprocess(s)
+    x = x.replace(" and ", " ").replace(" & ", " ")
+    return x.strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 2 — SECTOR ONTOLOGY EXPANSION
+# ─────────────────────────────────────────────────────────────────────────────
+ONTOLOGY_SYSTEM = """\
+You are a sector taxonomy expert. For each input sector, produce a small set of
+related sub-domains and adjacent domains that share value-chain or capability
+overlap. Examples:
+  CleanTech       -> WaterTech, Desalination, Renewable Energy, Recycling
+  ICT             -> ICT Hardware, Telecommunications, 5G Equipment, Networking
+  Industrial Mfg  -> Heavy Industry, Steel, Petrochemicals, Manufacturing Equipment
+  Healthcare      -> Life Sciences, MedTech, Pharma, Diagnostics, Hospital Services
+
+Return strict JSON only.
+"""
+
+ONTOLOGY_SCHEMA = {
+    "results": [{
+        "sector": "string", "canonical": "string",
+        "synonyms": ["string"], "sub_domains": ["string"], "adjacent_domains": ["string"],
+    }]
+}
+
+
+def load_ontology_cache(path: str) -> Dict[str, dict]:
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_ontology_cache(path: str, cache: Dict[str, dict]) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(cache, f, indent=2)
+
+
+def expand_sectors_via_gpt(client: OpenAI, sectors: List[str]) -> Dict[str, dict]:
+    if not sectors:
+        return {}
+    payload = {"sectors": sectors, "instructions": "Expand each sector. Return strict JSON.",
+               "output_schema": ONTOLOGY_SCHEMA}
+    parsed = call_json(client, ONTOLOGY_MODEL, ONTOLOGY_SYSTEM, payload)
+    out: Dict[str, dict] = {}
+    for r in parsed.get("results", []):
+        s = safe_str(r.get("sector"))
+        if not s:
+            continue
+        out[s] = {
+            "canonical":        safe_str(r.get("canonical")) or s,
+            "synonyms":         to_list(r.get("synonyms")),
+            "sub_domains":      to_list(r.get("sub_domains")),
+            "adjacent_domains": to_list(r.get("adjacent_domains")),
+        }
+    return out
+
+
+def build_ontology(client: OpenAI, sectors: List[str], cache_path: str) -> Dict[str, Set[str]]:
+    cache = load_ontology_cache(cache_path)
+    unique = sorted({s for s in sectors if safe_str(s)})
+    todo = [s for s in unique if s not in cache]
+    if todo:
+        for i in tqdm(range(0, len(todo), 24), desc="  GPT ontology expansion"):
+            batch = todo[i: i + 24]
+            try:
+                got = expand_sectors_via_gpt(client, batch)
+            except Exception as e:
+                print(f"  Ontology batch failed: {e}")
+                got = {}
+            for s in batch:
+                cache[s] = got.get(s, {"canonical": s, "synonyms": [],
+                                       "sub_domains": [], "adjacent_domains": []})
+        save_ontology_cache(cache_path, cache)
+
+    expanded: Dict[str, Set[str]] = {}
+    for s in unique:
+        info = cache.get(s, {})
+        bag = {canonicalize_sector(s), canonicalize_sector(info.get("canonical", s))}
+        for tok in info.get("synonyms", []) + info.get("sub_domains", []) + info.get("adjacent_domains", []):
+            bag.add(canonicalize_sector(tok))
+        bag.discard("")
+        expanded[s] = bag
+    return expanded
+
+
+def sectors_overlap(a: str, b: str, expanded: Dict[str, Set[str]]) -> bool:
+    ea = expanded.get(a, {canonicalize_sector(a)})
+    eb = expanded.get(b, {canonicalize_sector(b)})
+    return bool(ea & eb)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENTITY EXTRACTION (for product/service embedding text)
+# ─────────────────────────────────────────────────────────────────────────────
+OPP_EXTRACT_SCHEMA = {"results": [{
+    "id": "string",
+    "required_products": ["string"], "required_services": ["string"],
+    "required_materials": ["string"], "required_capabilities": ["string"],
+}]}
+
+COMP_EXTRACT_SCHEMA = {"results": [{
+    "id": "string",
+    "actual_products": ["string"], "actual_services": ["string"], "capabilities": ["string"],
+}]}
+
+
+def extract_batch(client: OpenAI, items: List[dict], kind: str) -> Dict[str, dict]:
+    schema = OPP_EXTRACT_SCHEMA if kind == "opportunity" else COMP_EXTRACT_SCHEMA
+    instruction = (
+        "Extract specific, concrete entities — products, materials, capabilities. "
+        "Avoid generic terms like 'solutions', 'services', 'management'. Return strict JSON."
+    )
+    payload = {"items": items, "instructions": instruction, "output_schema": schema}
+    system  = "You extract structured business entities from industrial descriptions."
+    parsed  = call_json(client, EXTRACTION_MODEL, system, payload)
+    return {str(r.get("id", "")).strip(): r for r in parsed.get("results", [])
+            if str(r.get("id", "")).strip()}
+
+
+def opp_entity_text(raw: dict) -> str:
+    parts = (to_list(raw.get("required_products")) + to_list(raw.get("required_services"))
+             + to_list(raw.get("required_materials")) + to_list(raw.get("required_capabilities")))
+    return " ".join(parts) or "n/a"
+
+
+def comp_entity_text(raw: dict) -> str:
+    parts = (to_list(raw.get("actual_products")) + to_list(raw.get("actual_services"))
+             + to_list(raw.get("capabilities")))
+    return " ".join(parts) or "n/a"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 6 — GPT VALIDATION
+# Rich prompt with persona, few-shot examples, scratchpad, and explicit
+# anti-patterns.
+# ─────────────────────────────────────────────────────────────────────────────
+DECISION_SYSTEM_PROMPT = """\
+You are a senior deal-sourcing analyst at a top-tier strategy consultancy
+(McKinsey/BCG/Bain calibre). You have evaluated thousands of company-to-
+opportunity matches across industrial, infrastructure, healthcare, ICT,
+financial services, and clean-tech sectors. You write like an investment
+memo author: direct, specific, evidence-bound, structurally clean.
+
+YOUR TASK
+For each candidate, evaluate whether the company can realistically fulfill
+the opportunity — directly OR via cross-sector adjacency with proven
+crossover value — and produce a complete decision package.
+
+CRITICAL RULES — VIOLATING ANY OF THESE = IMMEDIATE REWORK
+1. Cite real, named evidence. Reference actual products, divisions, brand
+   names, certifications, geographies, customer segments from the candidate's
+   profile. Do NOT use generic phrases like "well-positioned",
+   "comprehensive solutions", or "industry leader" without naming the
+   specific capability behind the claim.
+2. When the opportunity description references a regional context
+   (e.g. KSA, Saudi Vision 2030, MENA, GCC, North Africa, Egypt 2030),
+   incorporate that context into the narrative. Same for stated demand
+   drivers, regulatory frameworks, or specific projects (NEOM, ROSHN, etc.).
+3. Do NOT default to rejection. Roughly half of valid matches in this
+   pipeline come from cross-sector adjacencies with strong product overlap.
+   When the path exists, articulate it. When it doesn't, say so cleanly.
+4. Provide complete narrative for BOTH Yes AND No decisions. No stub fields.
+   No placeholder bullets.
+5. Match_path tells you why this pair reached you (Direct sector / Soft
+   match cross-sector / Weak overlap). Calibrate calibration, not whether
+   to evaluate. You always evaluate on real evidence.
+
+DECISION
+  ai_decision = "Yes"  → realistically fulfills, directly OR via adjacency
+                          with proven crossover value
+  ai_decision = "No"   → not viable. No realistic participation route.
+                          Generic word overlap is not a fit.
+
+QUANTITATIVE FIELDS
+  match_value (integer 0–100):
+    90–100  Exceptional fit — direct capability, near-OEM positioning, ideal
+            geography, regulatory alignment
+    75–89   Strong fit — clear capability, manageable bridges
+    60–74   Moderate fit — meaningful adjacency or partial coverage
+    40–59   Weak but defensible — secondary supplier, specialized component
+    20–39   Poor fit — significant gap, narrow rationale
+    0–19    No fit — sector or capability mismatch
+
+  match_confidence:
+    "High"   evidence is specific, multi-sourced, decisive
+    "Medium" evidence supports the call but has gaps
+    "Low"    judgment call with limited evidence
+
+NARRATIVE FIELDS — these are the deliverable. Treat them like memo paragraphs.
+
+ai_explanation
+  2–4 sentences, investment-memo paragraph style. State (a) what the company
+  is and what it specifically does — citing actual products/divisions/
+  history; (b) why it is or is not relevant to THIS opportunity, citing the
+  specific demand driver or capability gap; (c) the strategic implication —
+  technology transfer, regional market entry, capability extension, supply-
+  chain risk reduction, etc. For "No" decisions, lead with "No." then explain
+  why.
+
+ai_insight
+  ONE non-obvious strategic observation. An adjacency that unlocks the
+  opportunity, a hidden risk, a partnership channel, a regulatory or local-
+  content angle, or a capability transfer angle. Not a restatement of
+  ai_explanation.
+
+suggested_plan (3 sequenced steps — what to do this quarter)
+  Step 1: discovery / framing — get the conversation started, with named
+          deliverable.
+  Step 2: validation / proof — technical or commercial proof point.
+  Step 3: commitment — MOU, term sheet, pilot kickoff, or formal advancement.
+  For "No" decisions: Step 1 = document the rejection rationale; Step 2 =
+  identify the better-fit alternative companies; Step 3 = define the
+  trigger condition that would re-open the candidate.
+  Each step must name a specific action, person, or artifact. NO generic
+  verbs like "leverage", "explore", "synergize", "engage".
+
+match_reason (3 evidence-cited bullets)
+  Each bullet = one specific reason supporting the decision, anchored in a
+  named capability, product, market fact, or strategic blocker.
+
+ANTI-PATTERNS — DO NOT PRODUCE OUTPUT LIKE THIS:
+  ❌ "The company has comprehensive solutions in the relevant sector."
+  ❌ "Engage in strategic discussions to explore mutual opportunities."
+  ❌ "Leverage synergies between the company's capabilities and the project."
+  ❌ "Conduct a market analysis to identify alignment."
+  ❌ "Strong potential for collaboration based on sector alignment."
+
+WHAT GOOD LOOKS LIKE — FEW-SHOT EXAMPLES
+
+Example 1 (Yes, direct sector match):
+{
+  "candidate_id": "O7472_C31615",
+  "ai_decision": "Yes",
+  "match_value": 82,
+  "match_confidence": "High",
+  "ai_explanation": "Bank of America's Global Banking and Global Markets divisions are a direct fit for KSA's investment-banking and capital-markets opportunity, with named services in syndicated lending, debt capital markets, treasury management, and M&A advisory at scale relevant to Saudi sovereign and corporate issuance. BofA already has KSA exposure through Aramco IPO advisory work and ongoing Saudi PIF mandates, giving it a credible Vision 2030 anchor. The strategic value is in technology transfer for Saudi mid-market debt platforms and in catalysing regional capital-markets depth.",
+  "ai_insight": "BofA's existing co-advisory relationships with Saudi National Bank and HSBC in KSA debt issuance create a partner-of-partner channel that bypasses cold outreach and shortens execution by one quarter.",
+  "suggested_plan": [
+    "Brief BofA's MENA Investment Banking lead via Saudi PIF intro on the KSA capital-markets mandate, requesting a 60-min discovery within 3 weeks; deliverable is a one-page mandate brief.",
+    "Convene a joint working session between BofA Global Markets, the Saudi Capital Market Authority (CMA) liaison, and the project sponsor to validate technical scope (debt vs. equity, sukuk vs. conventional).",
+    "Issue a non-binding term sheet covering co-advisory roles, fee economics, and a Q3 pilot mandate (e.g. a benchmark sukuk issuance), targeting MOU signature within 8 weeks."
+  ],
+  "match_reason": [
+    "BofA's Global Banking syndicated-lending and debt capital-markets desks have direct execution capability for KSA sovereign and quasi-sovereign issuance.",
+    "BofA's history of advising on Saudi Aramco IPO and PIF mandates provides regulatory familiarity and pre-existing CMA relationships.",
+    "BofA's treasury and risk-management infrastructure can be replicated locally as a technology-transfer vehicle, aligning with Vision 2030 financial-sector goals."
+  ]
+}
+
+Example 2 (No, scope mismatch):
+{
+  "candidate_id": "O7480_C31615",
+  "ai_decision": "No",
+  "match_value": 18,
+  "match_confidence": "High",
+  "ai_explanation": "No. Bank of America is a global financial-services institution with no manufacturing capability, no industrial operations, and no presence in physical infrastructure construction. The opportunity to establish a prosthetics-device manufacturing factory in KSA requires biomaterials expertise, FDA Class-II/III orthopaedic certification, and a production footprint — none of which fall within BofA's competencies in banking, trading, or wealth management. The 'medical-related' word overlap on the candidate's profile (e.g. healthcare-sector lending) does not transfer to medical-device manufacturing.",
+  "ai_insight": "If the prosthetics opportunity is restructured as a project-finance package — debt + equity to a manufacturer — BofA could re-enter as the lead arranger; flag for the BofA Healthcare IB team if scope changes.",
+  "suggested_plan": [
+    "Document the rejection in the BD CRM with reason 'Scope mismatch: financial-services entity, not a manufacturer' and link to BofA's Healthcare IB practice as an alternate lane.",
+    "Re-route the opportunity to manufacturer candidates: Ottobock, Össur, Endolite for OEM; Arabian Centers/Saudi Industrial Investment Group for local-content partnership.",
+    "Define the re-trigger condition: 'Re-screen BofA if the opportunity expands to project-finance arrangement (>$200M debt) for the manufacturer.'"
+  ],
+  "match_reason": [
+    "BofA has zero manufacturing or industrial-production capability — its operations are exclusively in financial services.",
+    "The opportunity requires FDA/CE biomaterials and orthopaedic certifications that BofA does not hold and cannot acquire.",
+    "Healthcare-sector lending experience is not transferable to medical-device manufacturing — different value-chain position entirely."
+  ]
+}
+
+OUTPUT
+Return one JSON object per candidate, wrapped in {"results": [...]}. Each
+object has exactly these fields:
+
+{
+  "candidate_id": "string",
+  "ai_decision": "Yes" | "No",
+  "match_value": <integer 0-100>,
+  "match_confidence": "Low" | "Medium" | "High",
+  "ai_explanation": "2-4 sentence analyst paragraph",
+  "ai_insight": "one non-obvious strategic observation",
+  "suggested_plan": ["step 1", "step 2", "step 3"],
+  "match_reason": ["reason 1", "reason 2", "reason 3"]
+}
+"""
+
+
+def gpt_decide_batch(client: OpenAI, opp_context: dict, candidates: List[dict]) -> Dict[str, dict]:
+    payload = {
+        "opportunity": opp_context,
+        "candidates": candidates,
+        "instruction": (
+            "For EACH candidate, produce the full JSON object defined in the system prompt. "
+            "Return exactly: {\"results\": [...]}. Required for BOTH Yes and No: every "
+            "narrative field specific and named, investment-memo tone, no generic filler."
+        ),
+    }
+    parsed = call_json(client, DECISION_MODEL, DECISION_SYSTEM_PROMPT, payload)
+    return {str(r.get("candidate_id", "")).strip(): r for r in parsed.get("results", [])
+            if str(r.get("candidate_id", "")).strip()}
+
+
+def safe_decision(r: dict, fallback_cid: str) -> dict:
+    decision = str(r.get("ai_decision", "No")).strip().title()
+    if decision not in {"Yes", "No"}:
+        decision = "No"
+
+    try:
+        match_value = int(r.get("match_value", 0))
+    except Exception:
+        match_value = 0
+    match_value = max(0, min(100, match_value))
+
+    confidence = str(r.get("match_confidence", "Low")).strip().title()
+    if confidence not in {"Low", "Medium", "High"}:
+        confidence = "Low"
+
+    plan = to_list(r.get("suggested_plan"))[:3]
+    while len(plan) < 3:
+        plan.append("")
+
+    reasons = to_list(r.get("match_reason"))[:3]
+    while len(reasons) < 3:
+        reasons.append("")
+
+    return {
+        "candidate_id":     str(r.get("candidate_id", fallback_cid)).strip(),
+        "ai_decision":      decision,
+        "match_value":      match_value,
+        "match_confidence": confidence,
+        "ai_explanation":   safe_str(r.get("ai_explanation")),
+        "ai_insight":       safe_str(r.get("ai_insight")),
+        "suggested_plan":   plan,
+        "match_reason":     reasons,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────────────────────
+def main():
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required.")
+    client = OpenAI(api_key=api_key)
+
+    company_file = find_first_existing(COMPANY_FILE_CANDIDATES)
+    opp_file     = find_first_existing(OPPORTUNITY_FILE_CANDIDATES)
+    print(f"Company file    : {company_file}")
+    print(f"Opportunity file: {opp_file}")
+
+    companies     = normalize_company_cols(pd.read_excel(company_file)).reset_index(drop=True)
+    opportunities = normalize_opp_cols(pd.read_excel(opp_file)).reset_index(drop=True)
+
+    comp_id_col = find_id_column(companies, "company")
+    opp_id_col  = find_id_column(opportunities, "opportunity")
+    companies["_company_id"] = (pd.to_numeric(companies[comp_id_col], errors="coerce").fillna(0).astype(int)
+                                if comp_id_col else (companies.index + 1).astype(int))
+    opportunities["_opp_id"] = (pd.to_numeric(opportunities[opp_id_col], errors="coerce").fillna(0).astype(int)
+                                if opp_id_col else (opportunities.index + 1).astype(int))
+
+    companies["_key"]     = companies.index.map(lambda i: f"C{i}")
+    opportunities["_key"] = opportunities.index.map(lambda i: f"O{i}")
+
+    print(f"Loaded {len(companies)} companies x {len(opportunities)} opportunities = "
+          f"{len(companies)*len(opportunities)} candidate pairs")
+
+    # ── STEP 1 — Preprocessing ────────────────────────────────────────────────
+    print("\n[Step 1/8] Preprocessing — normalizing text...")
+    companies["_profile_text"] = companies["company_profile"].astype(str).map(preprocess)
+    companies["_sector_norm"]  = companies["Sector"].astype(str).map(canonicalize_sector)
+    opportunities["_desc_text"]   = opportunities["What is the opportunity description?"].astype(str).map(preprocess)
+    opportunities["_sector_norm"] = opportunities["Sector"].astype(str).map(canonicalize_sector)
+
+    # Build rich combined documents — name + sector + profile + products
+    def comp_combined(row) -> str:
+        return preprocess(" ".join([
+            safe_str(row["company_name"]), safe_str(row["Sector"]),
+            safe_str(row["company_profile"]), safe_str(row["product_services"]),
+        ]))
+
+    def opp_combined(row) -> str:
+        return preprocess(" ".join([
+            safe_str(row["What is the opportunity name?"]), safe_str(row["Sector"]),
+            safe_str(row["What is the opportunity description?"]),
+            safe_str(row.get("What are the investment highlights?", "")),
+            safe_str(row.get("What is the value proposition of this opportunity?", "")),
+            safe_str(row.get("What are the key demand drivers?", "")),
+            safe_str(row.get("What materials are involved or required in the project?", "")),
+        ]))
+
+    companies["_combined_text"]    = companies.apply(comp_combined, axis=1)
+    opportunities["_combined_text"] = opportunities.apply(opp_combined, axis=1)
+
+    # ── STEP 2 — Sector Ontology Expansion ────────────────────────────────────
+    print("[Step 2/8] Sector ontology expansion...")
+    all_sectors = list(set(
+        companies["Sector"].astype(str).map(safe_str).tolist()
+        + opportunities["Sector"].astype(str).map(safe_str).tolist()
+    ))
+    expanded = build_ontology(client, all_sectors, ONTOLOGY_CACHE_FILE)
+    print(f"  Ontology built for {len(expanded)} unique sectors")
+
+    # ── ENTITY EXTRACTION (feeds product_similarity) ──────────────────────────
+    print("[Step 4a/8] Extracting product/capability entities...")
+    opp_items = [{
+        "id": row["_key"],
+        "name": safe_str(row["What is the opportunity name?"]),
+        "sector": safe_str(row["Sector"]),
+        "description": safe_str(row["What is the opportunity description?"]),
+        "highlights": safe_str(row.get("What are the investment highlights?", "")),
+        "value_prop": safe_str(row.get("What is the value proposition of this opportunity?", "")),
+        "demand": safe_str(row.get("What are the key demand drivers?", "")),
+        "materials": safe_str(row.get("What materials are involved or required in the project?", "")),
+    } for _, row in opportunities.iterrows()]
+
+    opp_ent_text: Dict[str, str] = {}
+    opp_ent_raw:  Dict[str, dict] = {}
+    for i in tqdm(range(0, len(opp_items), EXTRACT_BATCH), desc="  Opp entities"):
+        batch = opp_items[i: i + EXTRACT_BATCH]
+        try:
+            resp = extract_batch(client, batch, "opportunity")
+        except Exception as e:
+            print(f"    failed batch {i}: {e}"); resp = {}
+        for b in batch:
+            r = resp.get(b["id"], {})
+            opp_ent_raw[b["id"]] = r
+            opp_ent_text[b["id"]] = opp_entity_text(r)
+
+    comp_items = [{
+        "id": row["_key"], "company_name": safe_str(row["company_name"]),
+        "sector": safe_str(row["Sector"]), "profile": safe_str(row["company_profile"]),
+        "product_services": safe_str(row["product_services"]),
+    } for _, row in companies.iterrows()]
+
+    comp_ent_text: Dict[str, str] = {}
+    comp_ent_raw:  Dict[str, dict] = {}
+    for i in tqdm(range(0, len(comp_items), EXTRACT_BATCH), desc="  Company entities"):
+        batch = comp_items[i: i + EXTRACT_BATCH]
+        try:
+            resp = extract_batch(client, batch, "company")
+        except Exception as e:
+            print(f"    failed batch {i}: {e}"); resp = {}
+        for b in batch:
+            r = resp.get(b["id"], {})
+            comp_ent_raw[b["id"]] = r
+            comp_ent_text[b["id"]] = comp_entity_text(r)
+
+    companies["_product_text"]     = companies["_key"].map(comp_ent_text)
+    opportunities["_product_text"] = opportunities["_key"].map(opp_ent_text)
+
+    # ── STEP 4 — Dense embeddings (text-embedding-3-large) + sparse TF-IDF ───
+    print(f"[Step 4/8] Building dense embeddings ({EMBEDDING_MODEL}) + sparse TF-IDF...")
+    use_openai = True
+    try:
+        companies["emb_profile"]     = embed_batch(client, companies["_profile_text"].tolist(), EMBEDDING_MODEL)
+        companies["emb_product"]     = embed_batch(client, companies["_product_text"].tolist(), EMBEDDING_MODEL)
+        opportunities["emb_desc"]    = embed_batch(client, opportunities["_desc_text"].tolist(), EMBEDDING_MODEL)
+        opportunities["emb_product"] = embed_batch(client, opportunities["_product_text"].tolist(), EMBEDDING_MODEL)
+    except Exception as e:
+        print(f"  Dense embeddings failed ({e}). Falling back to TF-IDF only.")
+        use_openai = False
+        all_texts = (
+            companies["_profile_text"].tolist() + companies["_product_text"].tolist()
+            + opportunities["_desc_text"].tolist() + opportunities["_product_text"].tolist()
+        )
+        tfidf_dense = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
+        tfidf_dense.fit(all_texts)
+        companies["emb_profile"]     = list(tfidf_dense.transform(companies["_profile_text"]).toarray())
+        companies["emb_product"]     = list(tfidf_dense.transform(companies["_product_text"]).toarray())
+        opportunities["emb_desc"]    = list(tfidf_dense.transform(opportunities["_desc_text"]).toarray())
+        opportunities["emb_product"] = list(tfidf_dense.transform(opportunities["_product_text"]).toarray())
+
+    # Sparse TF-IDF on combined-document text — captures exact product / segment names
+    sparse_corpus = companies["_combined_text"].tolist() + opportunities["_combined_text"].tolist()
+    tfidf_sparse = TfidfVectorizer(ngram_range=(1, 2), min_df=1, max_df=0.95, sublinear_tf=True)
+    tfidf_sparse.fit(sparse_corpus)
+    comp_sparse_mat = tfidf_sparse.transform(companies["_combined_text"])
+    opp_sparse_mat  = tfidf_sparse.transform(opportunities["_combined_text"])
+
+    # ── STEPS 3 + 5 + 7 — candidate matrix with sector + sparse + soft match ──
+    print("[Steps 3+5+7/8] Sector overlap + product matching + soft-match labelling...")
+    rows: List[dict] = []
+    n_sector  = 0; n_soft = 0; n_weak = 0
+
+    # Pre-compute sparse similarity matrix (companies x opportunities)
+    sparse_sim_matrix = cosine_similarity(comp_sparse_mat, opp_sparse_mat)
+
+    for opp_idx, opp in opportunities.iterrows():
+        opp_sector_raw = safe_str(opp["Sector"])
+        opp_name       = safe_str(opp["What is the opportunity name?"])
+        for comp_idx, comp in companies.iterrows():
+            comp_sector_raw = safe_str(comp["Sector"])
+            comp_name       = safe_str(comp["company_name"])
+
+            profile_sim = round(safe_cos(comp["emb_profile"], opp["emb_desc"]), 3)
+            product_sim = round(safe_cos(comp["emb_product"], opp["emb_product"]), 3)
+            sparse_sim  = round(float(sparse_sim_matrix[comp_idx, opp_idx]), 3)
+            combined    = max(profile_sim, product_sim, sparse_sim)
+
+            sector_sim_literal = 1 if (comp["_sector_norm"] and opp["_sector_norm"]
+                                       and comp["_sector_norm"] == opp["_sector_norm"]) else 0
+            sector_overlap = sectors_overlap(comp_sector_raw, opp_sector_raw, expanded)
+
+            if sector_overlap:
+                pass_reason = "sector_overlap"; n_sector += 1
+            elif combined >= SOFT_MATCH_THRESHOLD:
+                pass_reason = "soft_match"; n_soft += 1
+            else:
+                pass_reason = "weak_overlap"; n_weak += 1
+
+            rows.append({
+                "_pair_key":    f"{opp['_key']}_{comp['_key']}",
+                "_opp_key":     opp["_key"],
+                "_comp_key":    comp["_key"],
+                "_pass_reason": pass_reason,
+                "_combined":    float(combined),
+                "companyId":     int(comp["_company_id"]),
+                "opportunityId": int(opp["_opp_id"]),
+                "company_name":      comp_name,
+                "opportunity_name":  opp_name,
+                "company_sector":     comp_sector_raw,
+                "opportunity_sector": opp_sector_raw,
+                "sector_similarity":  int(sector_sim_literal),
+                "profile_similarity": float(profile_sim),
+                "product_similarity": float(product_sim),
+                "sparse_score":       float(sparse_sim),
+                "ai_score":         0,
+                "ai_decision":      "",
+                "match_value":      0,
+                "match_confidence": "",
+                "ai_explanation":   "",
+                "ai_insight":       "",
+                "suggested_plan":   [],
+                "match_reason":     [],
+            })
+
+    df = pd.DataFrame(rows)
+    print(f"  Match paths — sector overlap: {n_sector}, soft-match: {n_soft}, weak: {n_weak}")
+    print(f"  Sending all {len(df)} pairs to GPT for analyst-grade evaluation.")
+
+    # ── STEP 6 — GPT validation on EVERY pair ────────────────────────────────
+    print("[Step 6/8] GPT validation (Yes/No + match_value + analyst narrative)...")
+    for opp_key, group in tqdm(df.groupby("_opp_key"), total=df["_opp_key"].nunique()):
+        opp = opportunities[opportunities["_key"] == opp_key].iloc[0]
+        oent = opp_ent_raw.get(opp_key, {})
+
+        opp_context = {
+            "opportunity_name":        safe_str(opp["What is the opportunity name?"]),
+            "opportunity_sector":      safe_str(opp["Sector"]),
+            "opportunity_description": safe_str(opp["What is the opportunity description?"]),
+            "investment_highlights":   safe_str(opp.get("What are the investment highlights?", "")),
+            "value_proposition":       safe_str(opp.get("What is the value proposition of this opportunity?", "")),
+            "demand_drivers":          safe_str(opp.get("What are the key demand drivers?", "")),
+            "materials":               safe_str(opp.get("What materials are involved or required in the project?", "")),
+            "required_products":     to_list(oent.get("required_products")),
+            "required_services":     to_list(oent.get("required_services")),
+            "required_materials":    to_list(oent.get("required_materials")),
+            "required_capabilities": to_list(oent.get("required_capabilities")),
+        }
+
+        idxs = group.index.tolist()
+        for i in range(0, len(idxs), DECISION_BATCH):
+            bidx = idxs[i: i + DECISION_BATCH]
+            candidates = []
+            for idx in bidx:
+                comp_key = df.at[idx, "_comp_key"]
+                comp     = companies[companies["_key"] == comp_key].iloc[0]
+                cent     = comp_ent_raw.get(comp_key, {})
+                pass_reason = df.at[idx, "_pass_reason"]
+                match_path = {
+                    "sector_overlap": "Direct sector match (sector ontology overlap)",
+                    "soft_match":     "Cross-sector adjacency — Soft Match Mode (combined semantic >= 0.85)",
+                    "weak_overlap":   "Weak overlap — neither sector match nor strong semantic (likely No)",
+                }[pass_reason]
+                candidates.append({
+                    "candidate_id":    df.at[idx, "_pair_key"],
+                    "company_name":    safe_str(comp["company_name"]),
+                    "company_sector":  safe_str(comp["Sector"]),
+                    "company_profile": safe_str(comp["company_profile"]),
+                    "product_services": safe_str(comp["product_services"]),
+                    "actual_products":  to_list(cent.get("actual_products")),
+                    "actual_services":  to_list(cent.get("actual_services")),
+                    "capabilities":     to_list(cent.get("capabilities")),
+                    "match_path":       match_path,
+                    "ranking_signals": {
+                        "sector_similarity":  int(df.at[idx, "sector_similarity"]),
+                        "profile_similarity": float(df.at[idx, "profile_similarity"]),
+                        "product_similarity": float(df.at[idx, "product_similarity"]),
+                        "sparse_score":       float(df.at[idx, "sparse_score"]),
+                        "combined_max":       float(df.at[idx, "_combined"]),
+                    },
+                })
+
+            try:
+                results_map = gpt_decide_batch(client, opp_context, candidates)
+            except Exception as e:
+                print(f"  GPT decision failed for {opp_key} batch {i}: {e}")
+                results_map = {}
+
+            for idx in bidx:
+                cid = df.at[idx, "_pair_key"]
+                raw = results_map.get(cid, {"candidate_id": cid, "ai_decision": "No"})
+                r   = safe_decision(raw, cid)
+
+                df.at[idx, "ai_decision"]      = r["ai_decision"]
+                df.at[idx, "ai_score"]         = 1 if r["ai_decision"] == "Yes" else 0
+                df.at[idx, "match_value"]      = r["match_value"]
+                df.at[idx, "match_confidence"] = r["match_confidence"]
+                df.at[idx, "ai_explanation"]   = r["ai_explanation"]
+                df.at[idx, "ai_insight"]       = r["ai_insight"]
+                df.at[idx, "suggested_plan"]   = r["suggested_plan"]
+                df.at[idx, "match_reason"]     = r["match_reason"]
+
+    # ── STEP 8 — Final Score & Rank ───────────────────────────────────────────
+    print("[Step 8/8] Final score and ranking...")
+    df["final_score"] = (
+        W_AI      * df["ai_score"].astype(float)
+        + W_PROFILE * df["profile_similarity"].astype(float)
+        + W_PRODUCT * df["product_similarity"].astype(float)
+    ).round(3)
+
+    # Rank by combination of GPT match_value (primary) and final_score (tiebreak)
+    df = df.sort_values(
+        by=["opportunityId", "match_value", "final_score"],
+        ascending=[True, False, False],
+    ).reset_index(drop=True)
+    df["rank"] = df.groupby("opportunityId").cumcount() + 1
+
+    df = df.sort_values(by=["companyId", "rank"]).reset_index(drop=True)
+    df.insert(0, "id", range(1, len(df) + 1))
+
+    # ── OUTPUT ────────────────────────────────────────────────────────────────
+    df["suggested_plan_str"] = df["suggested_plan"].apply(lambda xs: json.dumps(xs, ensure_ascii=False))
+    df["match_reason_str"]   = df["match_reason"].apply(lambda xs: json.dumps(xs, ensure_ascii=False))
+
+    out = pd.DataFrame({
+        "id":                  df["id"].astype(int),
+        "companyId":           df["companyId"].astype(int),
+        "opportunityId":       df["opportunityId"].astype(int),
+        "company_name":        df["company_name"],
+        "opportunity_name":    df["opportunity_name"],
+        "company_sector":      df["company_sector"],
+        "opportunity_sector":  df["opportunity_sector"],
+        "sector_similarity":   df["sector_similarity"].astype(int),
+        "profile_similarity":  df["profile_similarity"].astype(float).round(3),
+        "product_similarity":  df["product_similarity"].astype(float).round(3),
+        "sparse_score":        df["sparse_score"].astype(float).round(3),
+        "ai_score":            df["ai_score"].astype(int),
+        "ai_decision":         df["ai_decision"],
+        "match_value":         df["match_value"].astype(int),
+        "match_confidence":    df["match_confidence"],
+        "final_score":         df["final_score"].astype(float).round(3),
+        "ai_explanation":      df["ai_explanation"],
+        "rank":                df["rank"].astype(int),
+        "ai_insight":          df["ai_insight"],
+        "suggested_plan":      df["suggested_plan_str"],
+        "match_reason":        df["match_reason_str"],
+    })
+
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+    out.to_excel(OUTPUT_FILE, index=False)
+
+    # Excel formatting
+    try:
+        from openpyxl import load_workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+        wb = load_workbook(OUTPUT_FILE)
+        ws = wb.active
+        headers = [ws.cell(row=1, column=i).value for i in range(1, ws.max_column + 1)]
+        header_fill = PatternFill(start_color="1F2937", end_color="1F2937", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True)
+        for c in range(1, ws.max_column + 1):
+            cell = ws.cell(row=1, column=c)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        narrative = {"ai_explanation", "ai_insight", "suggested_plan", "match_reason"}
+        widths = {
+            "id": 6, "companyId": 10, "opportunityId": 12,
+            "company_name": 28, "opportunity_name": 32,
+            "company_sector": 18, "opportunity_sector": 18,
+            "sector_similarity": 10, "profile_similarity": 10, "product_similarity": 10,
+            "sparse_score": 10, "ai_score": 8, "ai_decision": 12,
+            "match_value": 11, "match_confidence": 13, "final_score": 11,
+            "ai_explanation": 70, "rank": 6, "ai_insight": 60,
+            "suggested_plan": 60, "match_reason": 60,
+        }
+        for c, name in enumerate(headers, 1):
+            ws.column_dimensions[get_column_letter(c)].width = widths.get(name, 16)
+            if name in narrative:
+                for r in range(2, ws.max_row + 1):
+                    ws.cell(row=r, column=c).alignment = Alignment(wrap_text=True, vertical="top")
+
+        # Color band ai_decision
+        if "ai_decision" in headers:
+            dec_col = headers.index("ai_decision") + 1
+            yes_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+            no_fill  = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+            for r in range(2, ws.max_row + 1):
+                v = ws.cell(row=r, column=dec_col).value
+                if v == "Yes":
+                    ws.cell(row=r, column=dec_col).fill = yes_fill
+                elif v == "No":
+                    ws.cell(row=r, column=dec_col).fill = no_fill
+
+        # Color-band match_value: gradient from red (<40) → yellow (40-70) → green (>70)
+        if "match_value" in headers:
+            mv_col = headers.index("match_value") + 1
+            green = PatternFill(start_color="A9D08E", end_color="A9D08E", fill_type="solid")
+            yel   = PatternFill(start_color="FFD966", end_color="FFD966", fill_type="solid")
+            red   = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")
+            for r in range(2, ws.max_row + 1):
+                v = ws.cell(row=r, column=mv_col).value
+                try:
+                    iv = int(v)
+                    if iv >= 70: ws.cell(row=r, column=mv_col).fill = green
+                    elif iv >= 40: ws.cell(row=r, column=mv_col).fill = yel
+                    else: ws.cell(row=r, column=mv_col).fill = red
+                except Exception:
+                    pass
+
+        ws.freeze_panes = "A2"
+        wb.save(OUTPUT_FILE)
+    except Exception as e:
+        print(f"  (Excel formatting skipped: {e})")
+
+    # ── SUMMARY ───────────────────────────────────────────────────────────────
+    print(f"\nOutput saved : {OUTPUT_FILE}")
+    print(f"Total rows   : {len(out)}")
+    print(f"\nai_decision breakdown:")
+    for d, cnt in out["ai_decision"].value_counts().items():
+        print(f"  {d:<5} {cnt}")
+
+    yes_cross = ((out["ai_decision"] == "Yes") & (out["sector_similarity"] == 0)).sum()
+    yes_in    = ((out["ai_decision"] == "Yes") & (out["sector_similarity"] == 1)).sum()
+    print(f"\nYes matches: {yes_in} in-sector + {yes_cross} cross-sector (Soft Match Mode)")
+
+    print(f"\nmatch_value distribution:")
+    for tier, lo, hi in [("Exceptional (90+)", 90, 101), ("Strong (75-89)", 75, 90),
+                          ("Moderate (60-74)", 60, 75), ("Weak (40-59)", 40, 60),
+                          ("Poor (20-39)", 20, 40), ("No fit (<20)", 0, 20)]:
+        n = ((out["match_value"] >= lo) & (out["match_value"] < hi)).sum()
+        print(f"  {tier:<22} {n}")
+
+    print(f"\nmatch_confidence:")
+    for c, cnt in out["match_confidence"].value_counts().items():
+        print(f"  {c:<8} {cnt}")
+
+
+if __name__ == "__main__":
+    main()

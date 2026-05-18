@@ -1,0 +1,8 @@
+# Match pickles built with NumPy 2.x (avoids conda "numpy._core.numeric" load errors).
+numpy>=2,<3
+pandas>=2,<3
+openpyxl>=3.1
+openai>=1.0
+scikit-learn>=1.3
+tqdm>=4.65
+nltk>=3.8
