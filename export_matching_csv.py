@@ -26,8 +26,10 @@ IDs are sequential surrogates (companies 1..N in spreadsheet order, likewise
 opportunities). They do NOT correspond to any production database.
 
 Usage:
-  python3 export_matching_csv.py --env-file "/path/to/.env"
+  python3 export_matching_csv.py
   python3 export_matching_csv.py --top-n 5 --workers 8 --out Output/matching_output.csv
+
+Credentials come from this project's .env (gitignored).
 """
 from __future__ import annotations
 

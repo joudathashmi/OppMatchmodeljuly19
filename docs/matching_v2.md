@@ -124,11 +124,11 @@ python3 matching_v2.py --chat-provider public  # run the gate on public gpt-4.1
 python3 matching_v2.py --gpt-votes 5     # more self-consistency samples
 ```
 
-**Recommended world-class run** (real embeddings + gpt-4.1 gate + voting):
+**Recommended run** (real embeddings + gpt-4.1 gate + voting) — this is the
+default, because credentials live in this project's own `.env`:
 
 ```bash
-python3 matching_v2.py --env-file "/Users/joudathashmi/Downloads/uhnwi-fastapi 1/.env" \
-  --chat-provider public
+python3 matching_v2.py
 ```
 
 Outputs: `Output/matches_v2.xlsx`, `Output/gpt_labels.jsonl`,
@@ -144,29 +144,24 @@ the public `OPENAI_API_KEY` fills the rest; TF-IDF is the final fallback for
 vectors. On Azure the `model=` argument is a **deployment name**, not a model
 family.
 
-Environment variables (same convention as the uhnwi-fastapi project):
+Credentials live in this project's own `.env` (gitignored). Nothing outside this
+directory is needed; `--env-file` exists only for loading credentials from
+somewhere else, and is not required.
 
 | Var | Purpose |
 |-----|---------|
-| `MISA_USE_AZURE_OPENAI` | `true` to enable the Azure path |
+| `OPENAI_API_KEY` | public-API key. Drives embeddings and, by default, the gate |
+| `MISA_USE_AZURE_OPENAI` | `true` to run the gate in-tenant on Azure (default `false`) |
 | `AZURE_OPENAI_ENDPOINT` | e.g. `https://<resource>.openai.azure.com` |
 | `AZURE_OPENAI_API_KEY` | Azure key |
 | `AZURE_OPENAI_API_VERSION` | defaults to `2024-08-01-preview` |
 | `AZURE_OPENAI_DEPLOYMENT` | **chat** deployment (e.g. `gpt-4.1-mini`) |
 | `AZURE_OPENAI_EMBED_DEPLOYMENT` | **embeddings** deployment (optional) |
-| `OPENAI_API_KEY` | public-API key (used for whatever Azure doesn't cover) |
-
-Reuse the uhnwi Azure credentials without copying secrets:
-
-```bash
-python3 matching_v2.py --env-file "/Users/joudathashmi/Downloads/uhnwi-fastapi 1/.env"
-```
 
 Note: the `merketfit.openai.azure.com` resource has a chat deployment
-(`gpt-4.1-mini`) but **no embeddings deployment**, so a run reusing those creds
-gets GPT on Azure and embeddings from the public `OPENAI_API_KEY` (or TF-IDF if
-that key is dead). Add a `text-embedding-3-large` deployment to the Azure
-resource if you need embeddings inside the Azure tenant too.
+(`gpt-4.1-mini`) but **no embeddings deployment**, so even with the Azure path on,
+embeddings come from `OPENAI_API_KEY`. Add a `text-embedding-3-large` deployment
+to the Azure resource if embeddings must stay inside the tenant.
 
 ## The nine fixes over v1 (`Code.ipynb`)
 
