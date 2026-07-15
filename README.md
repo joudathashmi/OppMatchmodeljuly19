@@ -14,22 +14,33 @@ Copy `.env.example` to `.env` and set `OPENAI_API_KEY` (see `business_grade_matc
 
 ## Main pipeline
 
-Primary script: **`business_grade_matching.py`**
+Primary script: **`matching_v2.py`**. See [docs/matching_v2.md](docs/matching_v2.md)
+for the full architecture, scoring formula, config knobs, and known issues.
 
-Rough flow (see the module docstring for full detail):
+Rough flow:
 
-1. Preprocessing  
-2. Sector ontology expansion  
-3. Sector filtering  
-4. Semantic embedding and similarity  
-5. Product/service matching (combined scores)  
-6. GPT-based validation  
-7. Soft match mode (high similarity, relaxed sectors)  
-8. Ranking and export  
+1. Load + normalize companies and opportunities
+2. Vocabulary fit (protected sector vocab, corpus-common suppression, IDF)
+3. Vectorize (OpenAI embeddings, or hybrid TF-IDF fallback)
+4. Percentile-calibrated cosine similarity + specificity correction
+5. Per-pair sector / evidence / soft-match scoring and fusion
+6. Ranking in both directions from one scoring table
+7. Optional GPT validation on qualified top-N (gates label, logs to `gpt_labels.jsonl`)
+8. Export `Output/matches_v2.xlsx` (Opportunity_View, Company_View, All_Pairs, Abstentions, Diagnostics)
 
-Typical outputs (under `Output/` when run end-to-end): ranked matches workbook, intermediate pickles for resume.
+```bash
+python3 matching_v2.py                  # auto: OpenAI if key works, else TF-IDF
+python3 matching_v2.py --no-gpt         # skip GPT validation
+python3 matching_v2.py --no-openai      # force TF-IDF fallback
+python3 matching_v2.py --require-openai  # fail hard instead of TF-IDF fallback
+```
 
-Resume / partial runs:
+### Legacy pipeline
+
+`business_grade_matching.py` is the older script kept for reference. Its flow:
+preprocessing, sector ontology expansion, sector filtering, semantic
+embedding/similarity, product/service matching, GPT validation, soft-match mode,
+ranking and export. Resume / partial runs:
 
 ```bash
 python3 business_grade_matching.py --resume-export
