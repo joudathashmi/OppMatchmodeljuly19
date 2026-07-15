@@ -35,6 +35,21 @@ python3 matching_v2.py --no-openai      # force TF-IDF fallback
 python3 matching_v2.py --require-openai  # fail hard instead of TF-IDF fallback
 ```
 
+### Review GUI
+
+Build a self-contained HTML review page from the latest run and open it in any
+browser (no server, works offline):
+
+```bash
+python3 build_review_gui.py            # writes Output/matches_review.html
+open Output/matches_review.html        # macOS; or double-click the file
+```
+
+Browse each opportunity's graded candidates (tier, confidence, agreement,
+explanation, evidence), filter by Direct / Partner / Review-Low, see abstentions,
+and record your own Agree / Disagree / Unsure verdict plus notes. Evaluations
+save in the browser and export to CSV.
+
 ### Legacy pipeline
 
 `business_grade_matching.py` is the older script kept for reference. Its flow:

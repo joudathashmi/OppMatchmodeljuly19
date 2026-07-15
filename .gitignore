@@ -11,6 +11,7 @@ Output/*.pkl
 Output/*.xlsx
 Output/*.npz
 Output/*.jsonl
+Output/*.html
 
 # Bulk data, exports, temp Office files (keep repo code-only)
 *.xlsx
