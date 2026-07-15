@@ -79,10 +79,23 @@ opportunities still surface a candidate — see Known issues.
 ### Qualification and labels
 - `qualified = sector_score >= 0.35 AND n_evidence_terms >= 2`.
 - `real_sector_link = label in {Exact, Strong, Moderate} OR bridge fired`.
-- `decision_label`: soft matches without a real sector link cap at "Review
-  Needed"; GPT "Yes"/"No" overrides to High/Good/Low.
-- **Abstention:** an opportunity with no qualified candidate is listed on the
-  Abstentions sheet instead of force-ranking the least-bad company (FIX 7).
+- **Graded GPT gate.** For each qualified top-N pair the gate returns a tier via
+  self-consistency voting (`GPT_VOTES` samples, majority wins, ties resolve to
+  the more conservative tier). The `gpt_agreement` column ("k/n") and a
+  confidence = winning-share × mean-stated-confidence make the verdict calibrated
+  and stable across runs.
+  - **Direct** — the company could itself manufacture/assemble/deliver the
+    opportunity's product → **High Fit** (final ≥ 0.60) / **Good Fit**.
+  - **Partial** — a credible supplier/partner/adjacent player with a named
+    component, material, or technology linkage → **Partner Fit**.
+  - **None** — only generic sector/keyword overlap → **Low Fit**.
+- `decision_label`: without a GPT verdict the score ladder applies (soft/no-link
+  → Review Needed; bridge-only caps at Good Fit). When GPT ran, a GPT-unseen
+  qualified pair cannot keep a model-only Good/High Fit and is capped at Review
+  Needed, so no sheet claims a fit GPT has not confirmed.
+- **Abstention:** an opportunity is listed on the Abstentions sheet when it has
+  no qualified candidate, or (GPT mode) when no validated candidate is graded
+  Direct or Partial — instead of force-ranking the least-bad company.
 
 ## Config knobs (top of file)
 
@@ -95,6 +108,9 @@ opportunities still surface a candidate — see Known issues.
 | `SOFT_MATCH_MIN_PCT` | 0.60 | semantic percentile needed to soft-pass sector |
 | `MIN_EVIDENCE_IDF` | 1.5 | rarity floor for a term to count as evidence |
 | `GPT_TOP_N_PER_OPPORTUNITY` | 3 | how many top pairs per opp go to GPT |
+| `GPT_VOTES` | 3 | self-consistency samples per pair (`--gpt-votes`) |
+| `GPT_TEMPERATURE` | 0.3 | sampling temperature for the ensemble |
+| `GPT_MODELS` | gpt-4.1 first | public-API gate models, best-first |
 
 ## Running
 
@@ -104,6 +120,15 @@ python3 matching_v2.py --no-gpt        # skip GPT validation
 python3 matching_v2.py --no-openai     # force TF-IDF fallback
 python3 matching_v2.py --require-openai # fail hard instead of TF-IDF fallback
 python3 matching_v2.py --env-file PATH  # load extra .env (e.g. shared Azure creds)
+python3 matching_v2.py --chat-provider public  # run the gate on public gpt-4.1
+python3 matching_v2.py --gpt-votes 5     # more self-consistency samples
+```
+
+**Recommended world-class run** (real embeddings + gpt-4.1 gate + voting):
+
+```bash
+python3 matching_v2.py --env-file "/Users/joudathashmi/Downloads/uhnwi-fastapi 1/.env" \
+  --chat-provider public
 ```
 
 Outputs: `Output/matches_v2.xlsx`, `Output/gpt_labels.jsonl`,
@@ -157,6 +182,27 @@ resource if you need embeddings inside the Azure tenant too.
 9. GPT gate runs once on frozen scores; verdicts persisted for evaluation.
 
 ## Change log / status
+
+**2026-07-15 — graded self-consistency gate (world-class pass, landed):**
+
+- **Self-consistency voting.** LLM verdicts are non-deterministic even at
+  temperature 0 (an A/B test caught `gpt-4.1-mini` flipping the same pair Yes↔No
+  across runs). The gate now samples `GPT_VOTES` (3) times and majority-votes,
+  reporting `gpt_agreement` and a calibrated confidence. On the reference run
+  agreement is 3/3 on almost every pair — the verdict is now stable.
+- **gpt-4.1 gate.** The A/B showed `gpt-4.1` is the most precise/consistent
+  tier; `GPT_MODELS` lists it first and `--chat-provider public` routes the gate
+  to it (Azure `gpt-4.1-mini` remains available for in-tenant residency).
+- **Graded 3-tier verdict (Direct / Partial / None)** with a rubric prompt,
+  replacing binary Yes/No. This resolved a real failure: under a strict binary
+  "can it execute?" gate every opportunity abstained (0 fits) because no company
+  in the roster is a finished-product assembler. Grading recognizes credible
+  **supplier/partner** fits. Reference run: 0 Direct, **17 Partner fits across 9
+  opportunities** (e.g. Chemtrade supplies API-synthesis reagents; Belden
+  supplies 5G cabling/connectivity), **3 true abstentions** (MRI, Ventilator,
+  Regional refurbishment — no credible partner). New label: **Partner Fit**.
+- **Label integrity:** Good/High Fit require a GPT verdict; GPT-unseen qualified
+  pairs are capped at Review Needed.
 
 **2026-07-15 — Azure backend + GPT-aware triage (landed):**
 
