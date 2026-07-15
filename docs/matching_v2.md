@@ -103,10 +103,45 @@ python3 matching_v2.py                 # auto: OpenAI if key works, else TF-IDF
 python3 matching_v2.py --no-gpt        # skip GPT validation
 python3 matching_v2.py --no-openai     # force TF-IDF fallback
 python3 matching_v2.py --require-openai # fail hard instead of TF-IDF fallback
+python3 matching_v2.py --env-file PATH  # load extra .env (e.g. shared Azure creds)
 ```
 
 Outputs: `Output/matches_v2.xlsx`, `Output/gpt_labels.jsonl`,
 `Output/emb_cache_v2.npz` (embedding cache).
+
+### LLM backends (public OpenAI or Azure OpenAI)
+
+`resolve_backends()` picks the chat and embeddings backends **independently**,
+so GPT validation can run on Azure while semantic vectors come from the public
+API (or TF-IDF). Priority: Azure (when `MISA_USE_AZURE_OPENAI=true` and endpoint
++ key are set) for whichever of chat/embeddings has a configured deployment;
+the public `OPENAI_API_KEY` fills the rest; TF-IDF is the final fallback for
+vectors. On Azure the `model=` argument is a **deployment name**, not a model
+family.
+
+Environment variables (same convention as the uhnwi-fastapi project):
+
+| Var | Purpose |
+|-----|---------|
+| `MISA_USE_AZURE_OPENAI` | `true` to enable the Azure path |
+| `AZURE_OPENAI_ENDPOINT` | e.g. `https://<resource>.openai.azure.com` |
+| `AZURE_OPENAI_API_KEY` | Azure key |
+| `AZURE_OPENAI_API_VERSION` | defaults to `2024-08-01-preview` |
+| `AZURE_OPENAI_DEPLOYMENT` | **chat** deployment (e.g. `gpt-4.1-mini`) |
+| `AZURE_OPENAI_EMBED_DEPLOYMENT` | **embeddings** deployment (optional) |
+| `OPENAI_API_KEY` | public-API key (used for whatever Azure doesn't cover) |
+
+Reuse the uhnwi Azure credentials without copying secrets:
+
+```bash
+python3 matching_v2.py --env-file "/Users/joudathashmi/Downloads/uhnwi-fastapi 1/.env"
+```
+
+Note: the `merketfit.openai.azure.com` resource has a chat deployment
+(`gpt-4.1-mini`) but **no embeddings deployment**, so a run reusing those creds
+gets GPT on Azure and embeddings from the public `OPENAI_API_KEY` (or TF-IDF if
+that key is dead). Add a `text-embedding-3-large` deployment to the Azure
+resource if you need embeddings inside the Azure tenant too.
 
 ## The nine fixes over v1 (`Code.ipynb`)
 

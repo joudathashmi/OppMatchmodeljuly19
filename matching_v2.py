@@ -49,6 +49,11 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # dotenv is optional; env can be exported instead
+    load_dotenv = None
+
 # ----------------------------- configuration -----------------------------
 
 DATA_COMPANIES = "Data/companies.xlsx"
@@ -61,6 +66,7 @@ EMBEDDING_MODEL = "text-embedding-3-large"
 GPT_MODELS = ["gpt-4.1", "gpt-4o", "gpt-4o-mini"]
 GPT_TOP_N_PER_OPPORTUNITY = 3
 EMBED_BATCH = 96
+AZURE_API_VERSION_DEFAULT = "2024-08-01-preview"
 
 # final score weights (all components are 0-1)
 W_PROFILE = 0.30
@@ -225,57 +231,116 @@ VOCAB = Vocabulary()
 # ------------------------------- embeddings -------------------------------
 
 
-def _hash(text: str) -> str:
-    return hashlib.md5(f"{EMBEDDING_MODEL}::{text}".encode()).hexdigest()
+def _truthy(v) -> bool:
+    return (v or "").strip().lower() in ("1", "true", "yes", "on")
 
 
-def embed_texts(texts: list, client) -> np.ndarray:
-    """Batched OpenAI embeddings with an on-disk cache (FIX 5)."""
+def resolve_backends(args) -> dict:
+    """Resolve the chat and embeddings backends independently.
+
+    Two providers are supported: the public OpenAI API and Azure OpenAI
+    (same setup as the uhnwi-fastapi project — MISA_USE_AZURE_OPENAI plus
+    AZURE_OPENAI_ENDPOINT / _API_KEY / _API_VERSION / _DEPLOYMENT). Chat and
+    embeddings are resolved separately because an Azure resource may host a
+    chat deployment but no embeddings deployment (as merketfit.openai.azure.com
+    does): in that case GPT validation runs on Azure while semantic vectors
+    fall back to TF-IDF. On Azure the `model=` argument is a *deployment* name,
+    not a model family.
+
+    Returns a dict with: chat_client, chat_kind, chat_models (list),
+    embed_client, embed_kind, embed_model.
+    """
+    out = dict(chat_client=None, chat_kind=None, chat_models=[],
+               embed_client=None, embed_kind=None, embed_model=None)
+    if args.no_openai:
+        return out
+
+    az_client = None
+    if _truthy(os.getenv("MISA_USE_AZURE_OPENAI")):
+        endpoint = (os.getenv("AZURE_OPENAI_ENDPOINT") or "").strip().rstrip("/")
+        key = (os.getenv("AZURE_OPENAI_API_KEY") or "").strip()
+        if endpoint and key:
+            from openai import AzureOpenAI
+            az_client = AzureOpenAI(
+                azure_endpoint=endpoint, api_key=key,
+                api_version=(os.getenv("AZURE_OPENAI_API_VERSION")
+                             or AZURE_API_VERSION_DEFAULT).strip(),
+            )
+            az_chat = (os.getenv("AZURE_OPENAI_DEPLOYMENT") or "").strip()
+            az_embed = (os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT")
+                        or os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT") or "").strip()
+            if az_chat:
+                out.update(chat_client=az_client, chat_kind="azure", chat_models=[az_chat])
+            if az_embed:
+                out.update(embed_client=az_client, embed_kind="azure", embed_model=az_embed)
+
+    pub_client = None
+    if os.getenv("OPENAI_API_KEY"):
+        from openai import OpenAI
+        pub_client = OpenAI()
+    # Public API fills whichever backend Azure did not provide.
+    if out["chat_client"] is None and pub_client is not None:
+        out.update(chat_client=pub_client, chat_kind="openai", chat_models=list(GPT_MODELS))
+    if out["embed_client"] is None and pub_client is not None:
+        out.update(embed_client=pub_client, embed_kind="openai", embed_model=EMBEDDING_MODEL)
+    return out
+
+
+def _hash(text: str, model: str) -> str:
+    return hashlib.md5(f"{model}::{text}".encode()).hexdigest()
+
+
+def embed_texts(texts: list, client, model: str) -> np.ndarray:
+    """Batched embeddings with an on-disk cache, keyed by (model, text) so
+    Azure and public-API vectors never collide in the cache (FIX 5)."""
     cache = {}
     if os.path.exists(EMB_CACHE):
         loaded = np.load(EMB_CACHE)
         cache = {k: loaded[k] for k in loaded.files}
 
-    missing = [t for t in texts if _hash(t) not in cache]
+    missing = [t for t in texts if _hash(t, model) not in cache]
     for start in range(0, len(missing), EMBED_BATCH):
         chunk = missing[start:start + EMBED_BATCH]
-        resp = client.embeddings.create(model=EMBEDDING_MODEL, input=chunk)
+        resp = client.embeddings.create(model=model, input=chunk)
         for text, item in zip(chunk, resp.data):
-            cache[_hash(text)] = np.asarray(item.embedding, dtype=np.float32)
+            cache[_hash(text, model)] = np.asarray(item.embedding, dtype=np.float32)
     if missing:
         os.makedirs(os.path.dirname(EMB_CACHE), exist_ok=True)
         np.savez_compressed(EMB_CACHE, **cache)
 
-    return np.vstack([cache[_hash(t)] for t in texts])
+    return np.vstack([cache[_hash(t, model)] for t in texts])
 
 
-def build_vectors(companies: pd.DataFrame, opps: pd.DataFrame, args):
+def build_vectors(companies: pd.DataFrame, opps: pd.DataFrame, args, backends: dict):
     """Returns (profile_mat, product_mat, opp_mat, mode)."""
     corpus = (
         companies["combined"].tolist()
         + companies["products_clean"].tolist()
         + opps["requirement"].tolist()
     )
-    client = None
-    if not args.no_openai and os.getenv("OPENAI_API_KEY"):
+    client = backends["embed_client"]
+    model = backends["embed_model"]
+    kind = backends["embed_kind"]
+    if client is not None and model:
         try:
-            from openai import OpenAI
-            client = OpenAI()
-            client.embeddings.create(model=EMBEDDING_MODEL, input=["ping"])  # auth check
+            client.embeddings.create(model=model, input=["ping"])  # auth / deployment check
         except Exception as e:
-            client = None
-            msg = f"OpenAI embeddings UNAVAILABLE ({type(e).__name__}): falling back to TF-IDF."
+            msg = (f"{kind} embeddings UNAVAILABLE ({type(e).__name__}): "
+                   f"falling back to TF-IDF.")
             if args.require_openai:
                 sys.exit(f"FATAL: {msg} (--require-openai set)")
-            print(f"\n{'!' * 70}\n{msg}\nScores are NOT comparable with OpenAI-mode runs.\n{'!' * 70}\n")
-    elif args.require_openai:
-        sys.exit("FATAL: OPENAI_API_KEY not set and --require-openai given.")
+            print(f"\n{'!' * 70}\n{msg}\nScores are NOT comparable with embedding-mode runs.\n{'!' * 70}\n")
+            client = None
+
+    if client is None and args.require_openai:
+        sys.exit("FATAL: no embeddings backend available and --require-openai given "
+                 "(Azure resources need a text-embedding deployment; see docs).")
 
     if client is not None:
-        prof = embed_texts(companies["combined"].tolist(), client)
-        prod = embed_texts(companies["products_clean"].tolist(), client)
-        opp = embed_texts(opps["requirement"].tolist(), client)
-        return prof, prod, opp, "openai", client
+        prof = embed_texts(companies["combined"].tolist(), client, model)
+        prod = embed_texts(companies["products_clean"].tolist(), client, model)
+        opp = embed_texts(opps["requirement"].tolist(), client, model)
+        return prof, prod, opp, kind
 
     # Fallback: hybrid word + character TF-IDF (stronger than v1's word-only)
     from scipy.sparse import hstack
@@ -289,7 +354,7 @@ def build_vectors(companies: pd.DataFrame, opps: pd.DataFrame, args):
         return hstack([word.transform(texts), 0.5 * char.transform(texts)]).toarray()
 
     return (vec(companies["combined"]), vec(companies["products_clean"]),
-            vec(opps["requirement"]), "tfidf", None)
+            vec(opps["requirement"]), "tfidf")
 
 
 def cosine_matrix(A: np.ndarray, B: np.ndarray) -> np.ndarray:
@@ -404,7 +469,7 @@ def decision_label(final: float, qualified: bool, real_sector_link: bool,
 # ------------------------------ GPT validation ----------------------------
 
 
-def gpt_validate(client, comp: pd.Series, opp: pd.Series):
+def gpt_validate(client, models: list, comp: pd.Series, opp: pd.Series):
     prompt = f"""
 Evaluate company-opportunity fit and return strict JSON:
 {{"decision": "Yes or No", "confidence": 0.0 to 1.0,
@@ -422,7 +487,7 @@ Highlights: {opp['What are the investment highlights?']}
 Demand Drivers: {opp['What are the key demand drivers?']}
 Required Materials: {opp['What materials are involved or required in the project?']}
 """
-    for model in GPT_MODELS:
+    for model in models:
         try:
             resp = client.chat.completions.create(
                 model=model, temperature=0,
@@ -494,7 +559,20 @@ def main():
     ap.add_argument("--require-openai", action="store_true",
                     help="fail hard instead of falling back to TF-IDF")
     ap.add_argument("--top-n", type=int, default=GPT_TOP_N_PER_OPPORTUNITY)
+    ap.add_argument("--env-file", default=None,
+                    help="extra .env to load (e.g. to reuse the uhnwi Azure "
+                         "credentials); overrides values from the local .env")
     args = ap.parse_args()
+
+    if load_dotenv is not None:
+        load_dotenv(".env")  # local project .env, if present
+        if args.env_file:
+            load_dotenv(args.env_file, override=True)
+    elif args.env_file:
+        sys.exit("FATAL: --env-file given but python-dotenv is not installed "
+                 "(pip install python-dotenv).")
+
+    backends = resolve_backends(args)
 
     companies = load_companies()
     opps = load_opportunities()
@@ -511,8 +589,12 @@ def main():
           f"{len(VOCAB.protected)} sector tokens protected, "
           f"{len(VOCAB.domain)} domain keywords.")
 
-    prof_mat, prod_mat, opp_mat, mode, client = build_vectors(companies, opps, args)
-    print(f"Embedding mode: {mode.upper()}")
+    prof_mat, prod_mat, opp_mat, mode = build_vectors(companies, opps, args, backends)
+    chat_client = backends["chat_client"]
+    chat_models = backends["chat_models"]
+    print(f"Embedding backend: {mode.upper()}  |  "
+          f"Chat backend: {(backends['chat_kind'] or 'none').upper()}"
+          f"{' (' + chat_models[0] + ')' if chat_models else ''}")
 
     sim_profile = cosine_matrix(prof_mat, opp_mat)
     sim_product = cosine_matrix(prod_mat, opp_mat)
@@ -605,13 +687,14 @@ def main():
     df["gpt_decision"] = ""
     df["gpt_confidence"] = np.nan
     df["gpt_explanation"] = ""
-    if not args.no_gpt and client is not None:
+    if not args.no_gpt and chat_client is not None:
         todo = df[(df["rank_for_opportunity"] <= args.top_n) & df["qualified"]]
-        print(f"GPT-validating {len(todo)} qualified top-{args.top_n} pairs...")
+        print(f"GPT-validating {len(todo)} qualified top-{args.top_n} pairs "
+              f"via {backends['chat_kind'].upper()} ({chat_models[0]})...")
         labels = []
         for idx, row in todo.iterrows():
             decision, conf, expl, model = gpt_validate(
-                client, companies.loc[row["_i"]], opps.loc[row["_j"]]
+                chat_client, chat_models, companies.loc[row["_i"]], opps.loc[row["_j"]]
             )
             df.at[idx, "gpt_decision"] = decision
             df.at[idx, "gpt_confidence"] = conf
@@ -633,7 +716,8 @@ def main():
                     fh.write(json.dumps(item) + "\n")
             print(f"Appended {len(labels)} verdicts to {LABELS_JSONL}")
     elif not args.no_gpt:
-        print("GPT validation skipped: no working OpenAI client.")
+        print("GPT validation skipped: no chat backend available "
+              "(set a public OPENAI_API_KEY or Azure chat deployment).")
 
     df = df.drop(columns=["_i", "_j"])
 
