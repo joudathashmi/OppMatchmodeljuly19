@@ -115,7 +115,13 @@ def _as3(v) -> list:
 
 
 def generate(client, comp, opp) -> dict:
+    """Generate the narrative fields for one pair.
+
+    On total failure returns an "error" so the caller can report it rather than
+    silently emitting a blank row that reads like a genuine "No".
+    """
     prompt = prompt_for(comp, opp)
+    last_err = ""
     for model in MODEL_CHAIN:
         try:
             resp = client.chat.completions.create(
@@ -135,11 +141,14 @@ def generate(client, comp, opp) -> dict:
                 "ai_insight": str(p.get("ai_insight", "")).strip(),
                 "suggested_plan": _as3(p.get("suggested_plan")),
                 "match_reason": _as3(p.get("match_reason")),
+                "error": "",
             }
-        except Exception:
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {str(e)[:120]}"
             continue
     return {"fit": "None", "ai_explanation": "", "ai_insight": "",
-            "suggested_plan": ["", "", ""], "match_reason": ["", "", ""]}
+            "suggested_plan": ["", "", ""], "match_reason": ["", "", ""],
+            "error": last_err or "all models failed"}
 
 
 def main():
@@ -150,6 +159,9 @@ def main():
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--env-file", default=None)
     ap.add_argument("--limit", type=int, default=0, help="debug: only N rows")
+    ap.add_argument("--timeout", type=float, default=60.0,
+                    help="per-request timeout in seconds (SDK default 600 is far too long)")
+    ap.add_argument("--retries", type=int, default=3, help="SDK retries per request")
     args = ap.parse_args()
 
     if load_dotenv is not None:
@@ -165,7 +177,10 @@ def main():
 
     if not os.getenv("OPENAI_API_KEY"):
         raise SystemExit("OPENAI_API_KEY not set (use --env-file).")
-    client = OpenAI()
+    # A per-request timeout is essential: the SDK default is 600s, so a single
+    # stalled connection blocks a worker for ten minutes and the whole pool can
+    # sit at 0% CPU indefinitely. Bound each attempt and let the SDK retry.
+    client = OpenAI(timeout=args.timeout, max_retries=args.retries)
 
     companies = load_companies()
     opps = load_opportunities()
@@ -193,7 +208,10 @@ def main():
         with _print_lock:
             done[0] += 1
             if done[0] % 25 == 0 or done[0] == len(sel):
-                print(f"  {done[0]}/{len(sel)}")
+                print(f"  {done[0]}/{len(sel)}", flush=True)
+            if g["error"]:
+                print(f"  ! {row['company'][:30]} / {row['opportunity'][:30]}: {g['error']}",
+                      flush=True)
         return i, g
 
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
@@ -223,12 +241,19 @@ def main():
             "match_reason": json.dumps(g["match_reason"], ensure_ascii=False),
         })
 
+    n_failed = sum(1 for g in results.values() if g["error"])
+    if n_failed:
+        # Never let a generation failure masquerade as a genuine "No".
+        print(f"\nWARNING: {n_failed}/{len(sel)} pairs failed to generate and were "
+              f"written with empty narrative fields. Re-run to fill them.")
+
     out = pd.DataFrame(rows, columns=COLUMNS)
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     out.to_csv(args.out, index=False)
     n_yes = int((out["ai_decision"] == "Yes").sum())
     print(f"\nWrote {args.out}: {len(out)} rows, {n_yes} Yes / {len(out) - n_yes} No, "
-          f"{out['companyId'].nunique()} companies x top-{args.top_n}.")
+          f"{out['companyId'].nunique()} companies x top-{args.top_n}"
+          + (f", {n_failed} FAILED." if n_failed else "."))
 
 
 if __name__ == "__main__":
