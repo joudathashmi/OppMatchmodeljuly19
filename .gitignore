@@ -9,6 +9,8 @@ __pycache__/
 # Generated pipeline outputs
 Output/*.pkl
 Output/*.xlsx
+Output/*.npz
+Output/*.jsonl
 
 # Bulk data, exports, temp Office files (keep repo code-only)
 *.xlsx
