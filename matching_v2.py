@@ -132,26 +132,40 @@ SECTOR_ONTOLOGY = {
     "energy": {"grid", "storage", "renewable", "solar", "wind", "utility", "power"},
 }
 
+# Each rule: (side_a sectors, side_b sectors, capability terms, score, name, min_hits).
+# min_hits is the number of DISTINCT capability terms a company must share for the
+# bridge to fire. A single shared generic word ("chemical", "precision") is not a
+# bridge — GPT rejected 100% of the single-term pharma/medtech bridges — so the
+# weak cross-domain bridges require >=2 terms. `strong_terms` (when present) is a
+# subset that must contribute at least one hit, so the required terms can't all be
+# generic industrial vocabulary.
 BRIDGE_RULES = [
-    # (side_a sectors, side_b sectors, capability terms, score, name)
     ({"industrial", "manufacturing"}, {"ict", "hardware", "electronics", "telecom"},
      {"electronics", "electrical", "component", "components", "assembly", "hardware",
       "cables", "cabling", "wiring", "automation", "control", "sensor", "sensors",
       "pcb", "device", "devices", "enclosures"},
-     0.58, "Industrial ↔ ICT"),
+     0.58, "Industrial ↔ ICT", 2),
     ({"industrial", "manufacturing"}, {"medical", "pharma", "biotech", "healthcare"},
      {"precision", "diagnostic", "imaging", "sterile", "medical", "healthcare",
       "cleanroom", "instrument", "instruments", "biotech", "pharma", "chemical",
       "chemicals"},
-     0.48, "Industrial ↔ Medical/Pharma"),
+     0.48, "Industrial ↔ Medical/Pharma", 2),
     ({"ict", "hardware", "electronics"}, {"medical", "pharma", "healthcare"},
      {"medical", "healthcare", "diagnostic", "imaging", "device", "devices",
       "data", "software"},
-     0.52, "ICT ↔ Medical"),
+     0.52, "ICT ↔ Medical", 2),
     ({"energy", "oil", "gas", "utilities", "mining"}, {"pharma", "medical", "biotech"},
      {"chemical", "chemicals", "specialty", "processing", "refining", "synthesis"},
-     0.45, "Energy/Chemicals ↔ Pharma"),
+     0.45, "Energy/Chemicals ↔ Pharma", 2),
 ]
+
+# Terms too generic to justify a cross-domain bridge on their own. At least one
+# bridge hit must come from OUTSIDE this set, so "precision + chemical" (both
+# generic) no longer fires a Medical/Pharma bridge.
+GENERIC_BRIDGE_TERMS = {
+    "precision", "chemical", "chemicals", "assembly", "component", "components",
+    "control", "device", "devices", "data", "software", "specialty", "processing",
+}
 
 DYNAMIC_COMMON_RATIO = 0.12
 DYNAMIC_COMMON_MIN_DOCS = 5
@@ -202,7 +216,7 @@ class Vocabulary:
             self.protected |= tokenize_static(val)
         for key, vals in SECTOR_ONTOLOGY.items():
             self.protected |= {key} | set(vals)
-        for _, _, terms, _, _ in BRIDGE_RULES:
+        for _, _, terms, _, _, _ in BRIDGE_RULES:
             self.protected |= set(terms)
 
         doc_counts: dict = {}
@@ -403,10 +417,16 @@ def sector_score(company_sector: str, opp_sector: str, capability_tokens: set):
     )
     bridge_name = None
     if score < 0.50:
-        for side_a, side_b, terms, bscore, name in BRIDGE_RULES:
+        for side_a, side_b, terms, bscore, name, min_hits in BRIDGE_RULES:
             crossed = (c & side_a and o & side_b) or (c & side_b and o & side_a)
             hits = sorted(capability_tokens & terms)
-            if crossed and hits and bscore > score:
+            # A bridge needs >= min_hits distinct capability terms AND at least one
+            # that is not purely generic industrial vocabulary — otherwise a couple
+            # of boilerplate words ("precision", "chemical") spuriously bridge an
+            # industrial company into pharma/medtech (all such matches were rejected
+            # by GPT).
+            specific_hits = [h for h in hits if h not in GENERIC_BRIDGE_TERMS]
+            if crossed and len(hits) >= min_hits and specific_hits and bscore > score:
                 score = bscore
                 bridge_name = name
                 reason = f"Cross-sector bridge ({name}) via capabilities: {', '.join(hits[:6])}."
@@ -721,15 +741,36 @@ def main():
 
     df = df.drop(columns=["_i", "_j"])
 
-    # FIX 7 — abstention report
+    # FIX 7 + GPT-aware abstention — an opportunity abstains when it has no
+    # qualified candidate at all, OR (when GPT ran) when every validated top-N
+    # candidate was rejected by GPT. The second case matters here: the bridges
+    # qualify industrial companies for pharma/medtech opps, but GPT rejects them
+    # all, so the opportunity has no *validated* fit in the current company set
+    # and should say so instead of implying the bridged candidates are options.
+    gpt_ran = (not args.no_gpt) and (chat_client is not None)
     abstained = []
     for opp_name, grp in df.groupby("opportunity"):
         if not grp["qualified"].any():
+            best = grp.sort_values("final_score", ascending=False).iloc[0]
             abstained.append({
                 "opportunity": opp_name,
                 "status": "No qualified candidate",
-                "best_unqualified": grp.sort_values("final_score", ascending=False).iloc[0]["company"],
+                "best_candidate": best["company"],
+                "detail": "No company clears the sector + evidence bar.",
             })
+            continue
+        if gpt_ran:
+            validated = grp[grp["gpt_decision"].isin(["Yes", "No"])]
+            if len(validated) and not (validated["gpt_decision"] == "Yes").any():
+                best = validated.sort_values("final_score", ascending=False).iloc[0]
+                abstained.append({
+                    "opportunity": opp_name,
+                    "status": "No validated fit (all GPT-rejected)",
+                    "best_candidate": best["company"],
+                    "detail": (f"{int(len(validated))} top candidates validated, all "
+                               f"rejected by GPT; best was {best['company']} "
+                               f"(GPT No, conf {best['gpt_confidence']})."),
+                })
     abstain_df = pd.DataFrame(abstained)
 
     opp_view = df[df["qualified"] & (df["rank_for_opportunity"] <= max(args.top_n, 5))].sort_values(
@@ -747,6 +788,8 @@ def main():
         {"metric": "companies_with_qualified_match",
          "value": int(df[df["qualified"]]["company"].nunique())},
         {"metric": "opportunities_abstained", "value": len(abstain_df)},
+        {"metric": "opportunities_with_gpt_yes",
+         "value": int((df[df["gpt_decision"] == "Yes"]["opportunity"].nunique())) if gpt_ran else "n/a (no GPT)"},
         {"metric": "median_raw_profile_cosine", "value": round(float(df["raw_profile_cosine"].median()), 4)},
         {"metric": "top3_company_concentration",
          "value": round(df[df["rank_for_opportunity"] <= 3]["company"].value_counts(normalize=True).max(), 3)},
@@ -758,7 +801,7 @@ def main():
         comp_view.to_excel(writer, sheet_name="Company_View", index=False)
         df.sort_values(["opportunity", "rank_for_opportunity"]).to_excel(
             writer, sheet_name="All_Pairs", index=False)
-        (abstain_df if len(abstain_df) else pd.DataFrame([{"opportunity": "-", "status": "All opportunities have qualified candidates"}])).to_excel(
+        (abstain_df if len(abstain_df) else pd.DataFrame([{"opportunity": "-", "status": "All opportunities have a validated candidate"}])).to_excel(
             writer, sheet_name="Abstentions", index=False)
         diag.to_excel(writer, sheet_name="Diagnostics", index=False)
 

@@ -158,6 +158,26 @@ resource if you need embeddings inside the Azure tenant too.
 
 ## Change log / status
 
+**2026-07-15 — Azure backend + GPT-aware triage (landed):**
+
+- **Azure OpenAI support** — see the "LLM backends" section above.
+- **First full real run** (real `text-embedding-3-large` embeddings + Azure
+  `gpt-4.1-mini` gate): GPT rejected 35 of 36 qualified top-3 pairs, accepting
+  exactly one (Belden → 5G Small Cell, conf 0.90). The rejections are
+  well-reasoned (e.g. Chemtrade = inorganic sulfur chemicals ≠ pharma-API
+  organic synthesis). Takeaway: the embedding+bridge layer is decent **recall**
+  but weak **precision**; GPT is the real precision layer. This company roster
+  (industrial/energy/mining) genuinely has ~one strong fit for the ICT/pharma/
+  medtech opportunity set — the honest output is triage, not a forced top-3.
+- **GPT-aware abstention** — an opportunity now abstains not only when it has no
+  qualified candidate, but also when GPT rejected *every* validated top-N
+  candidate ("No validated fit (all GPT-rejected)"). On the real run this flags
+  11 of 12 opportunities, naming the best (rejected) candidate for each.
+- **Bridge tightening** — every bridge now needs `>= min_hits` (2) distinct
+  capability terms, and at least one from *outside* `GENERIC_BRIDGE_TERMS`, so a
+  couple of boilerplate words ("precision", "chemical") no longer bridge an
+  industrial company into pharma/medtech. Qualified pairs 267 → 199.
+
 **2026-07-15 — soft-match and ranking fixes (landed):**
 
 - **Soft-matches no longer qualify.** A pair with no sector overlap *and* no
@@ -181,13 +201,20 @@ Industrial↔Medical/Pharma) labeled "Good Fit"/"Review Needed", not forced pick
 
 ## Known issues (open work)
 
-1. **Generalist top-1 (deferred, not a defect in TF-IDF mode).** Belden is #1 on
-   all 5 ICT opportunities, but it's the one genuine broad-electronics company
-   and the top-3 slates are diverse (6 distinct companies across 15 slots), so
-   the dominance is legitimate. Do **not** tune `SPECIFICITY_BLEND` against
-   TF-IDF noise; re-evaluate after an OpenAI re-run.
-2. **OpenAI path unverified recently.** The key in `.env` has been expired, so
-   the model has been running on the TF-IDF fallback. Scores across modes are
-   deliberately not comparable; the GPT gate and semantic quality need a re-run
-   with a working key (`--require-openai`) to be validated. This is the main
-   prerequisite before further scoring tuning.
+1. **Supply-side coverage is the real limiter, not the model.** The company
+   roster is Industrial/Energy/Mining; the opportunities are ICT/Pharma/MedTech.
+   On the real GPT-gated run, 11 of 12 opportunities have no validated fit. No
+   scoring change fixes a missing supply side — if pharma/medtech matches are
+   wanted, add pharma/medtech-capable companies to `Data/companies.xlsx`.
+2. **Azure resource has no embeddings deployment.** `merketfit.openai.azure.com`
+   serves chat only; embeddings currently come from the public `OPENAI_API_KEY`.
+   Add a `text-embedding-3-large` deployment if embeddings must stay in-tenant.
+3. **GPT model tier.** Validation runs on `gpt-4.1-mini`. Its reasoning looks
+   sound (it accepts the one genuine fit and rejects the rest with specific
+   rationale), but a stronger model (`gpt-4o`/`gpt-4.1`) could be A/B-tested on
+   the borderline ICT bridges (Eaton, Riyadh Cables) to confirm none are being
+   rejected too harshly.
+
+*Resolved:* the earlier "Belden generalist dominance" concern is moot — on the
+real embedding run the ICT slates are diverse and GPT-aware abstention plus the
+GPT gate now govern what surfaces as a validated fit.
