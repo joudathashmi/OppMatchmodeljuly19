@@ -29,3 +29,4 @@ strategicinvestor*/
 
 # Ad-hoc logs
 _run_output.log
+Output/*.csv
