@@ -60,33 +60,56 @@ COLUMNS = [
 ]
 
 SYSTEM = (
-    "You are a rigorous investment-matching analyst assessing whether a company "
-    "fits a Saudi investment opportunity. Judge only from the evidence given; "
-    "never invent capabilities. Be concrete and name specifics."
+    "You are an investment-promotion analyst at MISA (Saudi Arabia) writing "
+    "concise, professional match rationales for a business-development team. You "
+    "judge fit accurately, but you WRITE like an analyst recommending or "
+    "dismissing an opportunity, not like a skeptic. Judge only from the evidence "
+    "given; never invent capabilities."
 )
 
 _print_lock = threading.Lock()
 
 
-def prompt_for(comp, opp) -> str:
+def prompt_for(comp, opp, forced=None) -> str:
+    directive = ""
+    if forced == "Yes":
+        directive = ("\nDECISION ALREADY MADE: this pairing IS a positive match. Set fit "
+                     "to Direct or Partial (never None) and write every field affirmatively.\n")
+    elif forced == "No":
+        directive = ("\nDECISION ALREADY MADE: this pairing is NOT a match. Set fit to None "
+                     "and write ai_explanation beginning with \"No.\", with match_reason "
+                     "giving the reasons it does not fit.\n")
     return f"""Assess this COMPANY against this OPPORTUNITY and return strict JSON.
-
-Grade "fit" as one of:
+{directive}
+First grade "fit" internally as one of:
 - "Direct": the company could itself manufacture/assemble/deliver the
   opportunity's product (its stated products cover the core work).
-- "Partial": it cannot make the finished product, but has a real named linkage
-  worth engaging (supplies key components, materials or technology, or has
-  strongly adjacent manufacturing that could credibly extend).
+- "Partial": it does not make the finished product, but is a credible supplier
+  or partner (supplies key components, materials or technology, or has strongly
+  adjacent manufacturing that could credibly extend).
 - "None": only a generic sector or keyword overlap, a different end-product, or
   no real linkage.
+
+WRITING STYLE (match this exactly):
+- If fit is Direct or Partial (a positive match), write ai_explanation as 3-4
+  AFFIRMATIVE sentences: how the company's specific expertise and named products
+  align with the opportunity, why it is a reliable manufacturer / supplier /
+  partner for delivering or localizing this in the KSA / MENA region, and the
+  strategic value (technology transfer, import substitution, local capability
+  building, supporting Vision 2030). Frame a Partial company positively as a
+  "reliable supplier" or "strong partner". Do NOT use the words "however" or
+  "cannot", and do not dwell on limitations.
+- If fit is None (not a match), begin ai_explanation with "No." then give 2-3
+  sentences on why the company's core competency does not align with the
+  opportunity.
 
 Return STRICT JSON only, no markdown:
 {{
   "fit": "Direct|Partial|None",
-  "ai_explanation": "3-5 sentences assessing sector, profile and product fit. State plainly what the company can and cannot do for this opportunity.",
-  "ai_insight": "2-3 sentences on the strategic implication: what this company unlocks for the opportunity or the Saudi market if engaged.",
-  "suggested_plan": ["3 concrete actions to pitch or engage this company", "...", "..."],
-  "match_reason": ["3 concise, specific reasons this pairing does or does not work", "...", "..."]
+  "ai_explanation": "see writing style above",
+  "ai_insight": "1-2 sentences on the strategic implication: what engaging this company unlocks for the opportunity or the Saudi market.",
+  "suggested_plan": ["3 concrete engagement/pitch actions", "...", "..."],
+  "match_reason": ["3 concise, specific reasons this pairing works (or, for None, does not)", "...", "..."]
 }}
 
 COMPANY
@@ -116,13 +139,15 @@ def _as3(v) -> list:
     return (out + [""] * 3)[:3] if out else ["", "", ""]
 
 
-def generate(client, comp, opp) -> dict:
+def generate(client, comp, opp, forced=None) -> dict:
     """Generate the narrative fields for one pair.
 
-    On total failure returns an "error" so the caller can report it rather than
-    silently emitting a blank row that reads like a genuine "No".
+    `forced` ("Yes"/"No"/None) pins the verdict up front so the explanation and
+    the decision never contradict each other. On total failure returns an
+    "error" so the caller can report it rather than silently emitting a blank
+    row that reads like a genuine "No".
     """
-    prompt = prompt_for(comp, opp)
+    prompt = prompt_for(comp, opp, forced=forced)
     last_err = ""
     for model in MODEL_CHAIN:
         try:
@@ -212,16 +237,18 @@ def main():
 
     def work(i_row):
         i, row = i_row
-        g = generate(client, comp_by[row["company"]], opp_by[row["opportunity"]])
+        # Reuse the gate's VERDICT (so the CSV never contradicts the workbook)
+        # by forcing it into the generation, so the affirmative reference-style
+        # explanation always matches the final Yes/No.
         gate = str(row.get("gpt_decision", "")).strip() if has_gate else ""
-        if gate in ("Direct", "Partial", "Yes", "No"):
-            g["fit"] = "Direct" if gate in ("Direct", "Yes") else ("Partial" if gate == "Partial" else "None")
-            gate_expl = str(row.get("gpt_explanation", "")).strip()
-            if gate_expl:
-                g["ai_explanation"] = gate_expl  # keep the workbook's wording
-            g["from_gate"] = True
-        else:
-            g["from_gate"] = False
+        forced = None
+        from_gate = False
+        if gate in ("Direct", "Partial", "Yes"):
+            forced, from_gate = "Yes", True
+        elif gate == "No":
+            forced, from_gate = "No", True
+        g = generate(client, comp_by[row["company"]], opp_by[row["opportunity"]], forced=forced)
+        g["from_gate"] = from_gate
         with _print_lock:
             done[0] += 1
             if g.get("from_gate"):
