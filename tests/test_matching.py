@@ -142,22 +142,59 @@ def _json(fit, conf=0.8):
 def test_gate_majority_direct():
     comp, opp = _pair()
     client = FakeClient([_json("Direct"), _json("Direct"), _json("None")])
-    fit, conf, expl, model, agree = m.gpt_validate(client, ["gpt"], comp, opp, votes=3)
+    fit, conf, expl, model, agree = m.gpt_validate(client, ["gpt"], comp, opp,
+                                                   votes=3, escalate=False)
     assert fit == "Direct" and agree == "2/3"
 
 
 def test_gate_three_way_tie_resolves_conservative():
     comp, opp = _pair()
     client = FakeClient([_json("Direct"), _json("Partial"), _json("None")])
-    fit, conf, expl, model, agree = m.gpt_validate(client, ["gpt"], comp, opp, votes=3)
+    fit, conf, expl, model, agree = m.gpt_validate(client, ["gpt"], comp, opp,
+                                                   votes=3, escalate=False)
     assert fit == "No"  # a 1/1/1 split resolves DOWN
 
 
 def test_gate_majority_partial():
     comp, opp = _pair()
     client = FakeClient([_json("Partial"), _json("Partial"), _json("Direct")])
-    fit, conf, expl, model, agree = m.gpt_validate(client, ["gpt"], comp, opp, votes=3)
+    fit, conf, expl, model, agree = m.gpt_validate(client, ["gpt"], comp, opp,
+                                                   votes=3, escalate=False)
     assert fit == "Partial" and agree == "2/3"
+
+
+def test_gate_unanimous_first_round_does_not_escalate():
+    comp, opp = _pair()
+    client = FakeClient([_json("Partial")] * 3)
+    fit, conf, expl, model, agree = m.gpt_validate(client, ["gpt"], comp, opp,
+                                                   votes=3, escalate=True)
+    assert fit == "Partial" and agree == "3/3"
+    assert client._i == 3  # no extra calls drawn
+
+
+def test_gate_split_first_round_escalates_to_five():
+    comp, opp = _pair()
+    # first 3 split 2/1, escalation draws 2 more (cycled from the start)
+    client = FakeClient([_json("Direct"), _json("Direct"), _json("None"),
+                         _json("Direct"), _json("Direct")])
+    fit, conf, expl, model, agree = m.gpt_validate(client, ["gpt"], comp, opp,
+                                                   votes=3, escalate=True)
+    assert fit == "Direct" and agree == "4/5"
+    assert client._i == 5
+
+
+# ------------------------------ entity resolution ------------------------------
+
+def test_canonical_name_merges_known_duplicates():
+    assert m.canonical_name("Tuwaiq Casting & forging") == m.canonical_name("Tuwaiq Casting and Forging")
+    assert m.canonical_name("AL GURG AUTOMATION AND CONTROLS LLC") == m.canonical_name("Al Gurg Automation and Controls")
+    # different entities stay distinct
+    assert m.canonical_name("Maschinenfabrik Reinhausen GmbH") != m.canonical_name("Reinhausen Middle East")
+
+
+def test_canonical_name_strips_legal_suffixes_only_at_end():
+    assert m.canonical_name("Acme Co Ltd") == "acme"
+    assert m.canonical_name("Co Op Industrial") == "co op industrial"
 
 
 # ---------------------------------- runner -------------------------------------

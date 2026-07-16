@@ -244,6 +244,24 @@ def preprocess(text) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# Legal-form suffixes ignored when deciding whether two company names are the
+# same entity ("Tuwaiq Casting & forging" == "Tuwaiq Casting and Forging",
+# "Al Gurg ... LLC" == "Al Gurg ...").
+_LEGAL_SUFFIXES = {"llc", "ltd", "limited", "inc", "co", "company", "gmbh",
+                   "sa", "plc", "corp", "corporation"}
+
+
+def canonical_name(name) -> str:
+    """Canonical entity key for a company name (casefold, &->and, punctuation
+    stripped, trailing legal-form suffixes removed)."""
+    s = str(name or "").lower().replace("&", " and ")
+    s = re.sub(r"[^\w\s]", " ", s)
+    toks = [t for t in s.split() if t]
+    while toks and toks[-1] in _LEGAL_SUFFIXES:
+        toks.pop()
+    return " ".join(toks)
+
+
 def tokenize_static(text) -> set:
     return {
         t for t in preprocess(text).split()
@@ -652,13 +670,20 @@ def _gpt_call_once(client, model: str, prompt: str):
     return fit, conf, str(parsed.get("explanation", "")).strip()
 
 
-def gpt_validate(client, models: list, comp: pd.Series, opp: pd.Series, votes: int = GPT_VOTES):
+ESCALATION_VOTES = 2  # extra samples drawn when the first round is split
+
+
+def gpt_validate(client, models: list, comp: pd.Series, opp: pd.Series,
+                 votes: int = GPT_VOTES, escalate: bool = True):
     """Self-consistency gate: sample the first working model `votes` times and
     majority-vote a graded verdict (Direct / Partial / No). Returns
     (fit, confidence, explanation, model, agreement); confidence = (winning
-    share) x (mean stated confidence of the winning tier). Majority voting
-    smooths the model's run-to-run non-determinism; ties resolve to the more
-    conservative tier so the gate never over-promises.
+    share) x (mean stated confidence of the winning tier).
+
+    Escalation: a split first round (not unanimous) draws ESCALATION_VOTES more
+    samples before tallying, so borderline pairs (the ones that used to flip
+    between runs at 2/3) are decided on 5 votes instead of 3. Ties resolve to
+    the more conservative tier so the gate never over-promises.
     """
     prompt = _gpt_prompt(comp, opp)
     for model in models:
@@ -670,6 +695,12 @@ def gpt_validate(client, models: list, comp: pd.Series, opp: pd.Series, votes: i
                 break  # this model is unusable — fall through to the next
         if not results:
             continue
+        if escalate and len(set(f for f, _, _ in results)) > 1:
+            for _ in range(ESCALATION_VOTES):
+                try:
+                    results.append(_gpt_call_once(client, model, prompt))
+                except Exception:
+                    break
         n = len(results)
         counts = {tier: sum(1 for f, _, _ in results if f == tier) for tier in GPT_FIT_ORDER}
         top = max(counts.values())
@@ -683,10 +714,57 @@ def gpt_validate(client, models: list, comp: pd.Series, opp: pd.Series, votes: i
         return fit, conf, explanation, model, f"{top}/{n}"
     return "Not Run", 0.0, "GPT validation unavailable.", None, "0/0"
 
+# ------------------------------- calibration -------------------------------
+
+
+def _unanimous_share(df: pd.DataFrame) -> float:
+    """Share of graded pairs whose votes were unanimous ('k/n' with k == n)."""
+    graded = df["gpt_agreement"][df["gpt_agreement"].astype(str).str.contains("/")]
+    if not len(graded):
+        return 0.0
+    unanimous = sum(1 for a in graded if a.split("/")[0] == a.split("/")[1])
+    return round(unanimous / len(graded), 3)
+
+
+def calibrate_probability(df: pd.DataFrame) -> dict | None:
+    """Learn P(validated fit | final_score) from the gate verdicts accumulated
+    in gpt_labels.jsonl and add a calibrated `match_probability` column.
+
+    This addresses audit item M1: instead of reading absolute meaning into the
+    hybrid final_score, the score is mapped through a logistic fit to the gate's
+    own historical labels (latest verdict per pair wins). One monotone feature,
+    so the reported AUC is exactly final_score's rank-discrimination on the
+    label set — an honest measure, not an overfit one. Skipped (returns None)
+    until the label pool has at least 30 pairs with 8 per class.
+    """
+    try:
+        with open(LABELS_JSONL) as fh:
+            records = [json.loads(line) for line in fh]
+    except FileNotFoundError:
+        return None
+    seen = {}
+    for d in records:
+        seen[(d["company"], d["opportunity"])] = d  # last verdict wins
+    labels = list(seen.values())
+    y = [1 if d["decision"] in ("Direct", "Partial", "Yes") else 0 for d in labels]
+    n_pos = sum(y)
+    if len(labels) < 30 or n_pos < 8 or (len(labels) - n_pos) < 8:
+        return None
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import roc_auc_score
+    X = np.array([[float(d["final_score"])] for d in labels])
+    lr = LogisticRegression().fit(X, y)
+    auc = roc_auc_score(y, lr.predict_proba(X)[:, 1])
+    df["match_probability"] = lr.predict_proba(
+        df[["final_score"]].to_numpy()
+    )[:, 1].round(3)
+    return {"n_labels": len(labels), "n_positive": n_pos, "auc": round(float(auc), 3)}
+
+
 # --------------------------------- loaders --------------------------------
 
 
-def load_companies() -> pd.DataFrame:
+def load_companies(dedupe: bool = True) -> pd.DataFrame:
     df = pd.read_excel(DATA_COMPANIES)
     df = df.rename(columns={
         "Company Name": "company_name", "Company Profile": "company_profile",
@@ -696,9 +774,28 @@ def load_companies() -> pd.DataFrame:
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise KeyError(f"companies.xlsx missing columns: {missing}")
-    dupes = df["company_name"][df["company_name"].duplicated()].tolist()
-    if dupes:
-        print(f"WARNING: duplicate company names (keeping all, matched independently): {dupes}")
+
+    # Entity resolution: rows whose canonical name matches are the same company
+    # entered twice (e.g. "Tuwaiq Casting & forging" / "Tuwaiq Casting and
+    # Forging"). Duplicates split scores and occupy two rank slots, so keep the
+    # row with the richest text and drop the rest, loudly.
+    merged = []
+    if dedupe:
+        df["_canon"] = df["company_name"].map(canonical_name)
+        df["_richness"] = (df["company_profile"].astype(str).str.len()
+                           + df["product and Services"].astype(str).str.len())
+        for key, grp in df.groupby("_canon"):
+            if len(grp) > 1:
+                keep = grp["_richness"].idxmax()
+                dropped = grp.drop(index=keep)["company_name"].tolist()
+                merged.append((grp.loc[keep, "company_name"], dropped))
+        if merged:
+            keep_idx = df.groupby("_canon")["_richness"].idxmax()
+            df = df.loc[sorted(keep_idx)]
+            for kept, dropped in merged:
+                print(f"Entity resolution: kept '{kept}', merged duplicate(s): {dropped}")
+        df = df.drop(columns=["_canon", "_richness"])
+    df.attrs["merged_entities"] = merged
     raw_combined = (
         df[["company_name", "company_profile", "product and Services"]]
         .astype(str).agg(" ".join, axis=1)
@@ -744,6 +841,10 @@ def main():
                     help="self-consistency samples per pair for the GPT gate")
     ap.add_argument("--workers", type=int, default=GPT_WORKERS,
                     help="concurrent GPT gate validations")
+    ap.add_argument("--no-dedupe", action="store_true",
+                    help="skip company entity resolution (keep duplicate rows)")
+    ap.add_argument("--no-escalate", action="store_true",
+                    help="disable extra gate votes on split first rounds")
     ap.add_argument("--embed-blend", type=float, default=EMBED_FOCUS_BLEND,
                     help="weight (0-1) on the capability-focused embedding; "
                          "0 = disable (exact pre-focus behaviour)")
@@ -766,9 +867,11 @@ def main():
 
     backends = resolve_backends(args)
 
-    companies = load_companies()
+    companies = load_companies(dedupe=not args.no_dedupe)
+    n_merged = sum(len(d) for _, d in companies.attrs.get("merged_entities", []))
     opps = load_opportunities()
-    print(f"Loaded {len(companies)} companies, {len(opps)} opportunities.")
+    print(f"Loaded {len(companies)} companies "
+          f"({n_merged} duplicate rows merged), {len(opps)} opportunities.")
 
     corpus = (companies["combined"].tolist() + companies["products_clean"].tolist()
               + opps["requirement"].tolist())
@@ -890,7 +993,7 @@ def main():
             idx, row = item
             return idx, row, gpt_validate(
                 chat_client, chat_models, companies.loc[row["_i"]], opps.loc[row["_j"]],
-                votes=args.gpt_votes,
+                votes=args.gpt_votes, escalate=not args.no_escalate,
             )
 
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
@@ -941,6 +1044,14 @@ def main():
               f"from Good/High Fit to Review Needed.")
 
     df = df.drop(columns=["_i", "_j"])
+
+    # Calibrated probability from the accumulated label pool (audit M1).
+    cal = calibrate_probability(df)
+    if cal:
+        print(f"Calibration: match_probability fitted on {cal['n_labels']} labeled "
+              f"pairs ({cal['n_positive']} positive), final_score AUC = {cal['auc']}.")
+    else:
+        print("Calibration skipped: label pool too small (needs 30+ pairs, 8 per class).")
 
     # FIX 7 + GPT-aware abstention — an opportunity abstains when it has no
     # qualified candidate at all, OR (when GPT ran) when the gate graded every
@@ -998,6 +1109,10 @@ def main():
         {"metric": "median_raw_profile_cosine", "value": round(float(df["raw_profile_cosine"].median()), 4)},
         {"metric": "top3_company_concentration",
          "value": round(df[df["rank_for_opportunity"] <= 3]["company"].value_counts(normalize=True).max(), 3)},
+        {"metric": "duplicate_rows_merged", "value": n_merged},
+        {"metric": "gate_unanimous_share", "value": _unanimous_share(df) if gpt_ran else "n/a"},
+        {"metric": "calibration_labels", "value": cal["n_labels"] if cal else "insufficient"},
+        {"metric": "calibration_auc_final_score", "value": cal["auc"] if cal else "insufficient"},
     ])
 
     os.makedirs(os.path.dirname(OUTPUT_XLSX), exist_ok=True)

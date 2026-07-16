@@ -31,15 +31,20 @@ the CSV and the workbook never contradict each other on the same pair.
 
 ## Medium priority
 
-### M1. final_score mixes relative and absolute components (documented)
+### M1. final_score mixes relative and absolute components (ADDRESSED)
 The semantic terms are percentiles (relative to the run), while sector and
 evidence are absolute; they are summed and then compared against fixed thresholds
-in `decision_label` (final >= 0.85, etc.). Because the percentile part rescales
-with the dataset, a fixed threshold does not mean the same thing on 768 pairs as
-on 900k. Ranking within a run is unaffected; the fixed labels are the wobble.
-Recommendation (not yet applied, needs a design choice): either make all
-components absolute, or make the label thresholds percentile-based too. Left as a
-documented limitation because it changes label semantics and deserves sign-off.
+in `decision_label`. Because the percentile part rescales with the dataset, a
+fixed threshold does not mean the same thing on 768 pairs as on 900k.
+
+Addressed by calibration rather than re-thresholding: `calibrate_probability`
+fits a logistic mapping from final_score to the gate's accumulated verdicts in
+`gpt_labels.jsonl` (latest verdict per pair wins) and adds a calibrated
+`match_probability` column to every row. One monotone feature, so the reported
+AUC is exactly final_score's rank-discrimination on the label pool - an honest
+measure that improves as labels accumulate across runs. First fit: 50 labels,
+AUC 0.779. The heuristic label thresholds remain for the no-GPT path but the
+probability column is the calibrated signal.
 
 ### M2. Evidence terms dominated by generic vocabulary (FIXED)
 The top evidence terms were "manufacturing", "industrial", "maintenance",
@@ -97,6 +102,22 @@ GPT-validated; ranks 4-5 are capped to "Review Needed". Consistent and safe, but
 if a fully validated view is wanted, raise the validation depth to match the view.
 
 ## Calibration note
-In the gate, a 1/1/1 vote split (Direct/Partial/No) resolves to No. This is
-deliberately conservative, but it discards a pair two of three votes liked.
-Acceptable for a precision-first gate; noted so it is a choice, not an accident.
+In the gate, a tied vote resolves to the more conservative tier. This is
+deliberately conservative; noted so it is a choice, not an accident.
+
+## World-class pass 2 (2026-07-16, post-audit)
+
+Three further upgrades beyond the audit items:
+
+1. **Entity resolution.** Duplicate company rows (same entity entered twice,
+   e.g. "Tuwaiq Casting & forging" / "Tuwaiq Casting and Forging") split scores
+   and occupied two rank slots. `canonical_name` (casefold, &->and, punctuation
+   and trailing legal suffixes stripped) merges them at load, keeping the row
+   with the richest text and reporting every merge. 3 rows merged; 64 -> 61
+   companies. `--no-dedupe` restores the old behaviour.
+2. **Vote escalation.** A split first round now draws 2 extra samples before
+   tallying, so borderline pairs are decided on 5 votes instead of 3. On the
+   verification run, 33/34 pairs were unanimous and the single split pair
+   settled at 4/5; gate_unanimous_share is reported in Diagnostics (0.971).
+3. **Calibrated match_probability** (see M1 above), with calibration_labels and
+   calibration_auc_final_score reported per run.
