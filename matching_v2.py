@@ -1,39 +1,31 @@
 #!/usr/bin/env python3
 """
-Company ↔ Opportunity matching — v2.
+Company <-> Opportunity matching.
 
-Rebuilt from Code.ipynb with the following fixes and upgrades:
+Pipeline (see docs/framework.md for the eight-step overview):
+  1. Preprocess and focus company/opportunity text (boilerplate stripped).
+  2. Sector ontology expansion; protected sector vocabulary.
+  3. Sector scoring with cross-sector bridges (no hard filtering); abstention.
+  4. Semantic embedding (text-embedding-3-large) with a capability-focused blend;
+     percentile-normalized cosine; specificity/popularity correction.
+  5. Product/service matching; weighted fusion into final_score.
+  6. Graded GPT gate (Direct / Partial / None) with self-consistency voting;
+     verdict governs the business label and is persisted to gpt_labels.jsonl.
+  7. GPT-aware abstention; unvalidated pairs cannot claim Good/High Fit.
+  8. Ranking and export.
 
-  FIX 1  Sector vocabulary is protected from dynamic stopword learning.
-         (v1 silently stripped "industrial"/"manufacturing" and eliminated
-         36/64 companies from every match.)
-  FIX 2  Semantic scores are percentile-normalized within the run, so
-         calibration is independent of the embedding backend (OpenAI vs
-         TF-IDF fallback produce comparable bands).
-  FIX 3  One scoring pass; both ranking views (per-opportunity and
-         per-company) are derived from the same table. Halves compute and
-         GPT spend vs v1's duplicated directions.
-  FIX 4  Vectorized cosine similarity (matrix ops, not per-pair calls).
-  FIX 5  Batched + cached embeddings (v1 made one API call per text).
-  FIX 6  The embedding mode is stamped on every output row and the run
-         fails loudly with --require-openai if the API is unavailable.
-  FIX 7  Abstention: an opportunity with no qualified candidate says so,
-         instead of force-ranking the least-bad company.
-  FIX 8  Popularity correction: a company's score is blended with its
-         specificity (how much this pair beats that company's own average),
-         so long generic profiles stop winning every opportunity.
-  FIX 9  GPT validation runs once, after scores are frozen, on the final
-         top-N; its verdict gates the decision label and is stored in its
-         own columns — it never overwrites the score scale. Verdicts are
-         appended to Output/gpt_labels.jsonl to build an evaluation set.
+Backends: public OpenAI and/or Azure OpenAI, resolved independently for chat and
+embeddings (see resolve_backends). Clients carry a request timeout and retries.
 
 Usage:
-  python3 matching_v2.py                 # auto mode (OpenAI if key works)
-  python3 matching_v2.py --no-gpt        # skip GPT validation
-  python3 matching_v2.py --require-openai  # fail instead of TF-IDF fallback
+  python3 matching_v2.py                    # public gpt-4.1 gate, focus blend on
+  python3 matching_v2.py --no-gpt           # scores only
+  python3 matching_v2.py --require-openai   # fail instead of TF-IDF fallback
+  python3 matching_v2.py --chat-provider azure   # gate in-tenant on Azure
+  python3 matching_v2.py --embed-blend 0    # disable the focus blend
 
 Inputs : Data/companies.xlsx, Data/new_opportunities.xlsx
-Outputs: Output/matches_v2.xlsx (+ Output/gpt_labels.jsonl)
+Outputs: Output/matches_v2.xlsx (+ Output/gpt_labels.jsonl, Output/emb_cache_v2.npz)
 """
 
 from __future__ import annotations
@@ -44,6 +36,7 @@ import json
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import numpy as np
@@ -72,8 +65,13 @@ GPT_TOP_N_PER_OPPORTUNITY = 3
 # ratio becomes a calibrated confidence and is reported per pair.
 GPT_VOTES = 3
 GPT_TEMPERATURE = 0.3
+GPT_WORKERS = 8            # concurrent gate validations
 EMBED_BATCH = 96
 AZURE_API_VERSION_DEFAULT = "2024-08-01-preview"
+# A per-request timeout is essential: the SDK default is 600s, so a single
+# stalled connection can wedge a run. Bound each attempt and let the SDK retry.
+OPENAI_TIMEOUT = 60.0
+OPENAI_RETRIES = 3
 
 # Capability-focused embeddings (embedding path only). We embed both the full
 # text and a version with corporate/price/geography boilerplate stripped, then
@@ -194,8 +192,16 @@ NON_CAPABILITY_TERMS = {
     "2030", "prices", "price", "cost", "costs", "demand", "supply", "export",
     "exports", "import", "imports", "billion", "million", "cagr", "forecast",
     "sabic", "aramco", "neom",
+    # generic filler that leaks into evidence but does not describe capability
+    "used", "units", "local", "centers", "main", "line", "various", "range",
+    "wide", "based", "provider", "private", "enterprise",
 }
 MIN_EVIDENCE_IDF = 1.5
+# Evidence must DISCRIMINATE: a term appearing in more than this share of the
+# corpus (e.g. "manufacturing", "industrial", "maintenance") is true of almost
+# every company and is excluded from evidence even though it is a protected
+# sector token and survives the common-word suppression.
+EVIDENCE_MAX_DOC_RATIO = 0.22
 
 # ------------------------------- text utils ------------------------------
 
@@ -253,6 +259,7 @@ class Vocabulary:
         self.common: set = set()
         self.protected: set = set()
         self.idf: dict = {}
+        self.doc_ratio: dict = {}
         self.domain: set = set()
 
     def fit(self, corpus: list, sector_texts: list, extra_domain_texts: list):
@@ -275,6 +282,7 @@ class Vocabulary:
             and tok not in self.protected  # <-- the v1 bug fix
         }
         self.idf = {tok: float(np.log(n / (1 + cnt))) + 1.0 for tok, cnt in doc_counts.items()}
+        self.doc_ratio = {tok: cnt / n for tok, cnt in doc_counts.items()}
 
         self.domain = set(self.protected)
         for text in extra_domain_texts:
@@ -324,6 +332,7 @@ def resolve_backends(args) -> dict:
                 azure_endpoint=endpoint, api_key=key,
                 api_version=(os.getenv("AZURE_OPENAI_API_VERSION")
                              or AZURE_API_VERSION_DEFAULT).strip(),
+                timeout=OPENAI_TIMEOUT, max_retries=OPENAI_RETRIES,
             )
             az_chat = (os.getenv("AZURE_OPENAI_DEPLOYMENT") or "").strip()
             az_embed = (os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT")
@@ -338,7 +347,7 @@ def resolve_backends(args) -> dict:
     pub_client = None
     if os.getenv("OPENAI_API_KEY"):
         from openai import OpenAI
-        pub_client = OpenAI()
+        pub_client = OpenAI(timeout=OPENAI_TIMEOUT, max_retries=OPENAI_RETRIES)
     # Public API fills whichever backend Azure did not provide. With
     # --chat-provider azure we keep chat in-tenant only (no public fallback).
     want_public_chat = getattr(args, "chat_provider", "auto") != "azure"
@@ -353,24 +362,23 @@ def _hash(text: str, model: str) -> str:
     return hashlib.md5(f"{model}::{text}".encode()).hexdigest()
 
 
-def embed_texts(texts: list, client, model: str) -> np.ndarray:
-    """Batched embeddings with an on-disk cache, keyed by (model, text) so
-    Azure and public-API vectors never collide in the cache (FIX 5)."""
-    cache = {}
+def _load_emb_cache() -> dict:
     if os.path.exists(EMB_CACHE):
         loaded = np.load(EMB_CACHE)
-        cache = {k: loaded[k] for k in loaded.files}
+        return {k: loaded[k] for k in loaded.files}
+    return {}
 
+
+def embed_texts(texts: list, client, model: str, cache: dict) -> np.ndarray:
+    """Batched embeddings against a shared in-memory cache keyed by (model,
+    text), so Azure and public-API vectors never collide. The caller owns
+    loading/saving the cache once per run (embed_texts only fills it)."""
     missing = [t for t in texts if _hash(t, model) not in cache]
     for start in range(0, len(missing), EMBED_BATCH):
         chunk = missing[start:start + EMBED_BATCH]
         resp = client.embeddings.create(model=model, input=chunk)
         for text, item in zip(chunk, resp.data):
             cache[_hash(text, model)] = np.asarray(item.embedding, dtype=np.float32)
-    if missing:
-        os.makedirs(os.path.dirname(EMB_CACHE), exist_ok=True)
-        np.savez_compressed(EMB_CACHE, **cache)
-
     return np.vstack([cache[_hash(t, model)] for t in texts])
 
 
@@ -400,9 +408,11 @@ def build_vectors(companies: pd.DataFrame, opps: pd.DataFrame, args, backends: d
                  "(Azure resources need a text-embedding deployment; see docs).")
 
     if client is not None:
-        prof = embed_texts(companies["combined"].tolist(), client, model)
-        prod = embed_texts(companies["products_clean"].tolist(), client, model)
-        opp = embed_texts(opps["requirement"].tolist(), client, model)
+        cache = _load_emb_cache()  # load once; embed_texts fills it in place
+        n_before = len(cache)
+        prof = embed_texts(companies["combined"].tolist(), client, model, cache)
+        prod = embed_texts(companies["products_clean"].tolist(), client, model, cache)
+        opp = embed_texts(opps["requirement"].tolist(), client, model, cache)
         # Capability-focused blend: sharpen the profile and opportunity vectors
         # with a boilerplate-stripped version. Blending keeps the ranking stable
         # (see EMBED_FOCUS_BLEND). Products are already capability-only, left as-is.
@@ -410,11 +420,14 @@ def build_vectors(companies: pd.DataFrame, opps: pd.DataFrame, args, backends: d
         if w > 0 and "combined_focused" in companies.columns:
             def _unit(v):
                 return v / np.clip(np.linalg.norm(v, axis=1, keepdims=True), 1e-12, None)
-            prof_f = embed_texts(companies["combined_focused"].tolist(), client, model)
-            opp_f = embed_texts(opps["requirement_focused"].tolist(), client, model)
+            prof_f = embed_texts(companies["combined_focused"].tolist(), client, model, cache)
+            opp_f = embed_texts(opps["requirement_focused"].tolist(), client, model, cache)
             prof = (1 - w) * _unit(prof) + w * _unit(prof_f)
             opp = (1 - w) * _unit(opp) + w * _unit(opp_f)
             kind = f"{kind}+focus{w:g}"
+        if len(cache) > n_before:  # save once, only if new vectors were added
+            os.makedirs(os.path.dirname(EMB_CACHE), exist_ok=True)
+            np.savez_compressed(EMB_CACHE, **cache)
         return prof, prod, opp, kind
 
     # Fallback: hybrid word + character TF-IDF (stronger than v1's word-only)
@@ -500,18 +513,27 @@ def sector_score(company_sector: str, opp_sector: str, capability_tokens: set):
 # --------------------------- evidence + fusion ----------------------------
 
 
-def domain_overlap(company_text: str, opp_text: str) -> list:
+def domain_overlap(company_tokens: set, opp_tokens: set, strict: bool = False) -> list:
     """Domain-vocabulary terms shared by both sides, ranked by IDF.
 
-    Geographic/market words and corpus-frequent terms are excluded — evidence
-    must be capability vocabulary, not shared boilerplate.
+    Takes precomputed token sets (each company/opportunity is tokenized once,
+    not once per pair). Geographic/market/filler words are always excluded.
+
+    strict=True additionally drops corpus-frequent terms (a word shared by nearly
+    every company, e.g. "manufacturing"). Strict terms are used for the shown
+    evidence and the evidence score, so explanations DISCRIMINATE. The lenient
+    list (strict=False) is used only to COUNT evidence for qualification, so
+    tightening the displayed evidence never silently prunes a real candidate.
     """
-    shared = VOCAB.tokenize(company_text) & VOCAB.tokenize(opp_text) & VOCAB.domain
-    shared = {
-        t for t in shared
-        if t not in NON_CAPABILITY_TERMS and VOCAB.idf.get(t, 0.0) >= MIN_EVIDENCE_IDF
-    }
-    return sorted(shared, key=lambda t: VOCAB.idf.get(t, 0.0), reverse=True)
+    shared = company_tokens & opp_tokens & VOCAB.domain
+    out = []
+    for t in shared:
+        if t in NON_CAPABILITY_TERMS or VOCAB.idf.get(t, 0.0) < MIN_EVIDENCE_IDF:
+            continue
+        if strict and VOCAB.doc_ratio.get(t, 0.0) > EVIDENCE_MAX_DOC_RATIO:
+            continue
+        out.append(t)
+    return sorted(out, key=lambda t: VOCAB.idf.get(t, 0.0), reverse=True)
 
 
 def evidence_score(terms: list) -> float:
@@ -720,6 +742,8 @@ def main():
     ap.add_argument("--top-n", type=int, default=GPT_TOP_N_PER_OPPORTUNITY)
     ap.add_argument("--gpt-votes", type=int, default=GPT_VOTES,
                     help="self-consistency samples per pair for the GPT gate")
+    ap.add_argument("--workers", type=int, default=GPT_WORKERS,
+                    help="concurrent GPT gate validations")
     ap.add_argument("--embed-blend", type=float, default=EMBED_FOCUS_BLEND,
                     help="weight (0-1) on the capability-focused embedding; "
                          "0 = disable (exact pre-focus behaviour)")
@@ -775,41 +799,39 @@ def main():
     sem_profile = (1 - SPECIFICITY_BLEND) * pct_profile + SPECIFICITY_BLEND * spec_profile
     sem_product = (1 - SPECIFICITY_BLEND) * pct_product + SPECIFICITY_BLEND * spec_product
 
+    # Tokenize each company and opportunity ONCE (not once per pair): at the real
+    # 2,960 x 309 scale this avoids ~900k redundant tokenizations.
+    comp_text = [f"{c['company_profile']} {c['product and Services']}"
+                 for _, c in companies.iterrows()]
+    comp_cap = [expand(canon(VOCAB.tokenize(t))) for t in comp_text]
+    comp_ev = [VOCAB.tokenize(t) for t in comp_text]
+    opp_ev = [VOCAB.tokenize(o["requirement"]) for _, o in opps.iterrows()]
+
     rows = []
     for i, comp in companies.iterrows():
-        cap_tokens = expand(canon(VOCAB.tokenize(
-            f"{comp['company_profile']} {comp['product and Services']}"
-        )))
+        cap_tokens = comp_cap[i]
         for j, opp in opps.iterrows():
             s_score, s_label, s_reason, bridge = sector_score(
                 comp["Sector"], opp["Sector"], cap_tokens
             )
-            terms = domain_overlap(
-                f"{comp['company_profile']} {comp['product and Services']}",
-                opp["requirement"],
-            )
+            qual_terms = domain_overlap(comp_ev[i], opp_ev[j])          # count -> qualification
+            terms = domain_overlap(comp_ev[i], opp_ev[j], strict=True)  # discriminating -> display/score
+            display_terms = terms or qual_terms  # never blank a qualified row
             ev = evidence_score(terms)
 
-            # soft sector pass: no sector overlap and no bridge, only semantic +
-            # domain-evidence signal. Surfaced for transparency but NOT qualified
-            # — pure semantic similarity (especially in TF-IDF mode) is too noisy
-            # to stand in for a real sector relationship, and was producing
-            # nonsense top picks (e.g. a transformer maker topping an MRI opp).
-            soft_match = False
-            if (s_label in ("No", "Unknown") and len(terms) >= MIN_EVIDENCE_TERMS
-                    and max(sem_profile[i, j], sem_product[i, j]) >= SOFT_MATCH_MIN_PCT
-                    and s_score < 0.35):
-                s_score, s_label = 0.35, "Weak"
-                soft_match = True
-                s_reason = (f"Soft candidate only: sector labels differ and no "
-                            f"cross-sector bridge fired; shared domain terms "
-                            f"({', '.join(terms[:4])}) are semantic signal, not a "
-                            f"sector relationship. Not qualified.")
+            # Soft candidate: no sector overlap and no bridge, only semantic +
+            # domain-evidence signal. Flagged for transparency but never qualified
+            # (pure semantic similarity is too noisy to stand in for a real sector
+            # relationship, and produced nonsense picks such as a transformer maker
+            # topping an MRI opportunity). No score mutation: the flag is enough.
+            soft_match = (s_label in ("No", "Unknown")
+                          and len(qual_terms) >= MIN_EVIDENCE_TERMS
+                          and max(sem_profile[i, j], sem_product[i, j]) >= SOFT_MATCH_MIN_PCT)
 
             real_sector_link = s_label in ("Exact", "Strong", "Moderate") or bridge is not None
             bridge_only = bridge is not None and s_label not in ("Exact", "Strong", "Moderate")
             qualified = (not soft_match and s_score >= MIN_SECTOR_SCORE
-                         and len(terms) >= MIN_EVIDENCE_TERMS)
+                         and len(qual_terms) >= MIN_EVIDENCE_TERMS)
             final = (W_PROFILE * sem_profile[i, j] + W_PRODUCT * sem_product[i, j]
                      + W_SECTOR * s_score + W_EVIDENCE * ev)
             label = decision_label(final, qualified, real_sector_link,
@@ -825,8 +847,8 @@ def main():
                 "semantic_product": round(float(sem_product[i, j]), 3),
                 "sector_score": round(s_score, 3), "sector_label": s_label,
                 "bridge": bridge or "", "evidence_score": round(ev, 3),
-                "evidence_terms": ", ".join(terms[:8]),
-                "n_evidence_terms": len(terms),
+                "evidence_terms": ", ".join(display_terms[:8]),
+                "n_evidence_terms": len(qual_terms),
                 "qualified": qualified, "real_sector_link": real_sector_link,
                 "bridge_only": bridge_only, "soft_candidate": soft_match,
                 "final_score": round(final, 3),
@@ -860,13 +882,22 @@ def main():
         todo = df[(df["rank_for_opportunity"] <= args.top_n) & df["qualified"]]
         print(f"GPT-validating {len(todo)} qualified top-{args.top_n} pairs "
               f"via {backends['chat_kind'].upper()} ({chat_models[0]}), "
-              f"{args.gpt_votes}-vote self-consistency...")
-        labels = []
-        for idx, row in todo.iterrows():
-            decision, conf, expl, model, agreement = gpt_validate(
+              f"{args.gpt_votes}-vote self-consistency, {args.workers} workers...")
+
+        # gpt_validate is pure (no shared state), so run the pairs concurrently
+        # and write results back to the frame afterwards (single-threaded writes).
+        def _validate(item):
+            idx, row = item
+            return idx, row, gpt_validate(
                 chat_client, chat_models, companies.loc[row["_i"]], opps.loc[row["_j"]],
                 votes=args.gpt_votes,
             )
+
+        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
+            results = list(ex.map(_validate, list(todo.iterrows())))
+
+        labels = []
+        for idx, row, (decision, conf, expl, model, agreement) in results:
             df.at[idx, "gpt_decision"] = decision
             df.at[idx, "gpt_confidence"] = conf
             df.at[idx, "gpt_explanation"] = expl
