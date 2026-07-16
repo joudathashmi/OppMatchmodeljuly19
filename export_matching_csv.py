@@ -12,9 +12,11 @@ Emits exactly these columns, matching the reference file
 Structure mirrors the reference: each company gets its top-N (default 5)
 opportunities ranked 1..N, including the rejected ones (ai_decision = No).
 
-Scores come from the last matching_v2 run (Output/matches_v2.xlsx). The four
-narrative fields (ai_explanation, ai_insight, suggested_plan, match_reason) are
-generated per pair by one GPT call, run in a thread pool.
+Scores come from the last matching_v2 run (Output/matches_v2.xlsx). For pairs the
+gate already validated there, the verdict (ai_decision) and explanation are
+REUSED verbatim, so the CSV never contradicts the workbook on the same pair; only
+the long-tail pairs the gate never saw are judged here, with the same rubric. The
+narrative fields (ai_insight, suggested_plan, match_reason) are always generated.
 
 Conventions taken from the reference file:
   - sector_similarity is 1 only when company_sector == opportunity_sector.
@@ -197,16 +199,33 @@ def main():
     sel = allp[allp["rank"] <= args.top_n].sort_values(["company", "rank"]).reset_index(drop=True)
     if args.limit:
         sel = sel.head(args.limit)
-    print(f"Generating narrative fields for {len(sel)} pairs "
-          f"(top {args.top_n} per company) with {args.workers} workers...")
+    # The gate (matching_v2) already produced an authoritative verdict for the
+    # pairs it validated. Reuse it so the CSV never contradicts the workbook on
+    # the same pair; only the long-tail pairs the gate never saw are judged here,
+    # using the same Direct/Partial/None rubric.
+    has_gate = "gpt_decision" in sel.columns
+    reused = [0]
+    print(f"Building {len(sel)} rows (top {args.top_n} per company) with "
+          f"{args.workers} workers; reusing gate verdicts where available...")
 
     done = [0]
 
     def work(i_row):
         i, row = i_row
         g = generate(client, comp_by[row["company"]], opp_by[row["opportunity"]])
+        gate = str(row.get("gpt_decision", "")).strip() if has_gate else ""
+        if gate in ("Direct", "Partial", "Yes", "No"):
+            g["fit"] = "Direct" if gate in ("Direct", "Yes") else ("Partial" if gate == "Partial" else "None")
+            gate_expl = str(row.get("gpt_explanation", "")).strip()
+            if gate_expl:
+                g["ai_explanation"] = gate_expl  # keep the workbook's wording
+            g["from_gate"] = True
+        else:
+            g["from_gate"] = False
         with _print_lock:
             done[0] += 1
+            if g.get("from_gate"):
+                reused[0] += 1
             if done[0] % 25 == 0 or done[0] == len(sel):
                 print(f"  {done[0]}/{len(sel)}", flush=True)
             if g["error"]:
@@ -254,6 +273,8 @@ def main():
     print(f"\nWrote {args.out}: {len(out)} rows, {n_yes} Yes / {len(out) - n_yes} No, "
           f"{out['companyId'].nunique()} companies x top-{args.top_n}"
           + (f", {n_failed} FAILED." if n_failed else "."))
+    print(f"Verdicts reused verbatim from the gate: {reused[0]}/{len(sel)} "
+          f"(the rest judged here with the same rubric).")
 
 
 if __name__ == "__main__":
