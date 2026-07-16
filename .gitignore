@@ -1,5 +1,6 @@
 # Local secrets — never commit
 .env
+.env.*
 
 # Python / OS
 __pycache__/
