@@ -63,6 +63,9 @@ COLUMNS = [
     "sector_similarity", "profile_similarity", "product_similarity", "ai_score",
     "ai_decision", "final_score", "ai_explanation", "rank", "ai_insight",
     "suggested_plan", "match_reason",
+    # Per-signal explanations, populated on every row (Yes and No): they
+    # justify the profile_similarity and product_similarity columns.
+    "profile_match_reason", "product_match_reason",
 ]
 
 SYSTEM = (
@@ -117,7 +120,9 @@ Return STRICT JSON only, no markdown:
   "ai_explanation": "see writing style above",
   "ai_insight": "1-2 sentences on the strategic implication: what engaging this company unlocks for the opportunity or the Saudi market.",
   "suggested_plan": ["3 concrete engagement/pitch actions", "...", "..."],
-  "match_reason": ["3 concise, specific reasons this pairing works (or, for None, does not)", "...", "..."]
+  "match_reason": ["3 concise, specific reasons this pairing works (or, for None, does not)", "...", "..."],
+  "profile_match_reason": "1-2 sentences: why the company's overall PROFILE (who they are, scale, sectors served, track record) does or does not align with this opportunity. Always populated, for both fits and non-fits.",
+  "product_match_reason": "1-2 sentences: why the company's specific PRODUCTS/SERVICES do or do not cover what this opportunity needs, naming the relevant products or the missing ones. Always populated, for both fits and non-fits."
 }}
 
 COMPANY
@@ -176,6 +181,8 @@ def generate(client, comp, opp, forced=None) -> dict:
                 "ai_insight": str(p.get("ai_insight", "")).strip(),
                 "suggested_plan": _as3(p.get("suggested_plan")),
                 "match_reason": _as3(p.get("match_reason")),
+                "profile_match_reason": str(p.get("profile_match_reason", "")).strip(),
+                "product_match_reason": str(p.get("product_match_reason", "")).strip(),
                 "error": "",
             }
         except Exception as e:
@@ -183,6 +190,7 @@ def generate(client, comp, opp, forced=None) -> dict:
             continue
     return {"fit": "None", "ai_explanation": "", "ai_insight": "",
             "suggested_plan": ["", "", ""], "match_reason": ["", "", ""],
+            "profile_match_reason": "", "product_match_reason": "",
             "error": last_err or "all models failed"}
 
 
@@ -309,6 +317,8 @@ def main():
             "ai_insight": g["ai_insight"] if yes else "",
             "suggested_plan": json.dumps(g["suggested_plan"], ensure_ascii=False) if yes else "",
             "match_reason": json.dumps(g["match_reason"], ensure_ascii=False) if yes else "",
+            "profile_match_reason": g["profile_match_reason"],
+            "product_match_reason": g["product_match_reason"],
         })
 
     n_failed = sum(1 for g in results.values() if g["error"])
