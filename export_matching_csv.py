@@ -59,7 +59,8 @@ except ImportError:
 MODEL_CHAIN = ["gpt-4.1", "gpt-4o", "gpt-4o-mini"]
 
 COLUMNS = [
-    "id", "companyId", "opportunityId", "company_sector", "opportunity_sector",
+    "id", "companyId", "company_name", "opportunityId", "opportunity_name",
+    "company_sector", "opportunity_sector",
     "sector_similarity", "profile_similarity", "product_similarity", "ai_score",
     "ai_decision", "final_score", "ai_explanation", "rank", "ai_insight",
     "suggested_plan", "match_reason",
@@ -325,7 +326,9 @@ def main():
         rows.append({
             "id": len(rows) + 1,
             "companyId": company_id[row["company"]],
+            "company_name": row["company"],
             "opportunityId": opportunity_id[row["opportunity"]],
+            "opportunity_name": row["opportunity"],
             "company_sector": cs,
             "opportunity_sector": os_,
             "sector_similarity": 1 if cs == os_ else 0,
