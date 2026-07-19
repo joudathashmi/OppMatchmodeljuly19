@@ -293,8 +293,12 @@ def main():
             "company_sector": cs,
             "opportunity_sector": os_,
             "sector_similarity": 1 if cs == os_ else 0,
-            "profile_similarity": unit(row["raw_profile_cosine"]),
-            "product_similarity": unit(row["raw_product_cosine"]),
+            # The calibrated semantic values that actually feed final_score
+            # (percentile-normalized), NOT the raw cosines: exporting raw
+            # cosines next to a percentile-based final_score made rows
+            # impossible to reconcile (profile 0.33 with final 0.81).
+            "profile_similarity": unit(row["semantic_profile"]),
+            "product_similarity": unit(row["semantic_product"]),
             "ai_score": 1 if yes else 0,
             "ai_decision": "Yes" if yes else "No",
             "final_score": unit(row["final_score"]),
