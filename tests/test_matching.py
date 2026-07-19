@@ -197,6 +197,42 @@ def test_canonical_name_strips_legal_suffixes_only_at_end():
     assert m.canonical_name("Co Op Industrial") == "co op industrial"
 
 
+# ---------------------------- consortium readiness -----------------------------
+
+def test_quote_in_text_verifies_normalized_quotes():
+    text = "The facility requires precision assembly of hot-swappable PSUs, and RF cabling."
+    assert m.quote_in_text("precision assembly of hot-swappable PSUs", text)
+    # punctuation/case differences still verify
+    assert m.quote_in_text("Precision assembly, of hot swappable psus", text)
+
+
+def test_quote_in_text_rejects_invented_or_short_quotes():
+    text = "The facility requires precision assembly of PSUs."
+    assert not m.quote_in_text("GMP-certified biologics fill-finish lines", text)  # invented
+    assert not m.quote_in_text("precision assembly", text)  # too short to ground a need
+
+
+# ----------------------------- human-in-the-loop --------------------------------
+
+def test_load_human_reviews_parses_and_maps_verdicts(tmp_path=None):
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        p = os.path.join(td, "human_reviews.csv")
+        pd.DataFrame([
+            {"company": "Belden", "opportunity": "5G Macro", "verdict": "agree"},
+            {"company": "Acme", "opportunity": "MRI", "verdict": "Not a fit"},
+            {"company": "Junk", "opportunity": "X", "verdict": "maybe"},  # ignored
+        ]).to_csv(p, index=False)
+        out = m.load_human_reviews(p)
+    assert out[("Belden", "5G Macro")] == 1
+    assert out[("Acme", "MRI")] == 0
+    assert ("Junk", "X") not in out
+
+
+def test_load_human_reviews_missing_file_is_empty():
+    assert m.load_human_reviews("/nonexistent/nowhere.csv") == {}
+
+
 # ---------------------------------- runner -------------------------------------
 
 def _run_all():

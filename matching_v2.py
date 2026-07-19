@@ -54,6 +54,17 @@ DATA_OPPORTUNITIES = "Data/new_opportunities.xlsx"
 OUTPUT_XLSX = "Output/matches_v2.xlsx"
 LABELS_JSONL = "Output/gpt_labels.jsonl"
 EMB_CACHE = "Output/emb_cache_v2.npz"
+NEEDS_CACHE = "Output/needs_cache_v1.json"
+# Human-in-the-loop: reviews exported from the GUI, dropped here by the analyst.
+# Verdicts override the gate's own labels in calibration (gold beats silver).
+HUMAN_REVIEWS_CSV = "Data/human_reviews.csv"
+HUMAN_LABEL_WEIGHT = 3.0
+
+# Consortium view readiness gate: an opportunity gets a needs breakdown only if
+# GPT can extract at least this many needs whose supporting quotes VERIFY
+# against the brief text. Below the bar the opportunity keeps the plain ranked
+# view (fallback), so thin briefs never produce invented value chains.
+MIN_VERIFIED_NEEDS = 3
 
 EMBEDDING_MODEL = "text-embedding-3-large"
 # gpt-4.1 first: the A/B test showed it is the most precise and stable gate
@@ -726,39 +737,258 @@ def _unanimous_share(df: pd.DataFrame) -> float:
     return round(unanimous / len(graded), 3)
 
 
-def calibrate_probability(df: pd.DataFrame) -> dict | None:
-    """Learn P(validated fit | final_score) from the gate verdicts accumulated
-    in gpt_labels.jsonl and add a calibrated `match_probability` column.
+def load_human_reviews(path: str = HUMAN_REVIEWS_CSV) -> dict:
+    """Analyst verdicts exported from the review GUI: {(company, opportunity):
+    1|0}. Agree-style verdicts map to 1, disagree-style to 0; anything else is
+    ignored. Missing or unreadable file -> empty dict (the loop is optional)."""
+    if not os.path.exists(path):
+        return {}
+    try:
+        df = pd.read_csv(path)
+    except Exception as e:
+        print(f"WARNING: could not read {path} ({type(e).__name__}); ignoring it.")
+        return {}
+    out = {}
+    for _, r in df.iterrows():
+        v = str(r.get("verdict", "")).strip().lower()
+        if v in ("agree", "yes", "fit", "1", "true"):
+            label = 1
+        elif v in ("disagree", "no", "not a fit", "notfit", "0", "false"):
+            label = 0
+        else:
+            continue
+        out[(str(r.get("company", "")).strip(),
+             str(r.get("opportunity", "")).strip())] = label
+    return out
 
-    This addresses audit item M1: instead of reading absolute meaning into the
-    hybrid final_score, the score is mapped through a logistic fit to the gate's
-    own historical labels (latest verdict per pair wins). One monotone feature,
-    so the reported AUC is exactly final_score's rank-discrimination on the
-    label set — an honest measure, not an overfit one. Skipped (returns None)
-    until the label pool has at least 30 pairs with 8 per class.
+
+def calibrate_probability(df: pd.DataFrame, human_reviews: dict | None = None) -> dict | None:
+    """Learn P(validated fit | final_score) and add a calibrated
+    `match_probability` column (audit M1).
+
+    Label pool: the gate's accumulated verdicts in gpt_labels.jsonl (latest
+    verdict per pair wins), OVERRIDDEN by any human review for the same pair —
+    analyst judgment is gold, the gate's is silver — and human labels carry
+    HUMAN_LABEL_WEIGHT in the fit. One monotone feature, so the reported AUC is
+    exactly final_score's rank-discrimination on the label pool. Skipped
+    (returns None) until the pool has at least 30 pairs with 8 per class.
     """
+    pool: dict = {}
     try:
         with open(LABELS_JSONL) as fh:
-            records = [json.loads(line) for line in fh]
+            for line in fh:
+                d = json.loads(line)
+                y = 1 if d["decision"] in ("Direct", "Partial", "Yes") else 0
+                pool[(d["company"], d["opportunity"])] = (float(d["final_score"]), y, 1.0)
     except FileNotFoundError:
+        pass
+
+    n_human = 0
+    if human_reviews:
+        cur_score = {(r.company, r.opportunity): float(r.final_score)
+                     for r in df.itertuples()}
+        for pair, label in human_reviews.items():
+            score = pool.get(pair, (None,))[0]
+            if score is None:
+                score = cur_score.get(pair)
+            if score is None:
+                continue  # reviewed pair no longer exists in the data
+            pool[pair] = (score, label, HUMAN_LABEL_WEIGHT)
+            n_human += 1
+
+    if not pool:
         return None
-    seen = {}
-    for d in records:
-        seen[(d["company"], d["opportunity"])] = d  # last verdict wins
-    labels = list(seen.values())
-    y = [1 if d["decision"] in ("Direct", "Partial", "Yes") else 0 for d in labels]
-    n_pos = sum(y)
-    if len(labels) < 30 or n_pos < 8 or (len(labels) - n_pos) < 8:
+    scores, ys, ws = zip(*pool.values())
+    n_pos = sum(ys)
+    if len(pool) < 30 or n_pos < 8 or (len(pool) - n_pos) < 8:
         return None
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import roc_auc_score
-    X = np.array([[float(d["final_score"])] for d in labels])
-    lr = LogisticRegression().fit(X, y)
-    auc = roc_auc_score(y, lr.predict_proba(X)[:, 1])
+    X = np.array(scores).reshape(-1, 1)
+    lr = LogisticRegression().fit(X, ys, sample_weight=ws)
+    auc = roc_auc_score(ys, lr.predict_proba(X)[:, 1])
     df["match_probability"] = lr.predict_proba(
         df[["final_score"]].to_numpy()
     )[:, 1].round(3)
-    return {"n_labels": len(labels), "n_positive": n_pos, "auc": round(float(auc), 3)}
+    return {"n_labels": len(pool), "n_positive": n_pos, "n_human": n_human,
+            "auc": round(float(auc), 3)}
+
+
+# ------------------------- consortium (needs) view -------------------------
+#
+# Decomposes an opportunity into the capabilities it EXPLICITLY requires and
+# maps gate-validated companies onto each need ("consortium view"). Guarded so
+# thin briefs never produce invented value chains:
+#   1. Quote-grounded extraction — every need must carry a verbatim quote from
+#      the brief, and the quote is verified in code. No verified quote, no need.
+#   2. Readiness gate — fewer than MIN_VERIFIED_NEEDS verified needs marks the
+#      opportunity "thin data" and it keeps the plain ranked view (fallback).
+# Needs with no covering validated company are reported as GAP, not hidden.
+
+
+def _norm_quote(s: str) -> str:
+    s = re.sub(r"[^\w\s]", " ", str(s or "").lower())
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def quote_in_text(quote: str, text: str) -> bool:
+    """True when the (normalized) quote genuinely appears in the source text
+    and is substantial enough to ground a need (4+ words)."""
+    q = _norm_quote(quote)
+    return len(q.split()) >= 4 and q in _norm_quote(text)
+
+
+def _needs_source_text(opp: pd.Series) -> str:
+    fields = [
+        "What is the opportunity description?",
+        "What are the investment highlights?",
+        "What is the value proposition of this opportunity?",
+        "What materials are involved or required in the project?",
+    ]
+    return "\n".join(str(opp.get(f, "") or "") for f in fields)
+
+
+def extract_needs(client, models: list, opp: pd.Series, cache: dict) -> list:
+    """Extract quote-grounded needs for one opportunity. Returns only the needs
+    whose quotes verify against the brief. Cached by text hash."""
+    src = _needs_source_text(opp)
+    key = hashlib.md5(f"needs::{src}".encode()).hexdigest()
+    if key not in cache:
+        prompt = f"""From the OPPORTUNITY text below, list the distinct technical capabilities,
+production stages, or input supplies it EXPLICITLY requires.
+
+Rules:
+- Only include what the text explicitly states. Do not infer or invent.
+- Each item: {{"capability": "<2-5 word label>", "quote": "<verbatim quote from
+  the text, 5-25 words, copied exactly>"}}
+- 3 to 10 items; return fewer (even zero) if the text lacks explicit detail.
+
+Return STRICT JSON only: {{"needs": [...]}}
+
+OPPORTUNITY TEXT:
+{src}
+"""
+        parsed = {"needs": []}
+        for model in models:
+            try:
+                resp = client.chat.completions.create(
+                    model=model, temperature=0,
+                    messages=[{"role": "system", "content":
+                               "You extract explicitly stated requirements from text. "
+                               "You never infer beyond what is written."},
+                              {"role": "user", "content": prompt}],
+                )
+                content = re.sub(r"^```(?:json)?|```$", "",
+                                 (resp.choices[0].message.content or "").strip()).strip()
+                parsed = json.loads(content)
+                break
+            except Exception:
+                continue
+        cache[key] = parsed
+    needs = cache[key].get("needs", []) if isinstance(cache[key], dict) else []
+    return [n for n in needs
+            if isinstance(n, dict) and n.get("capability")
+            and quote_in_text(n.get("quote", ""), src)]
+
+
+def map_consortium(client, models: list, opp_name: str, needs: list,
+                   validated: pd.DataFrame, comp_by: dict) -> list:
+    """Map validated companies onto each verified need. Companies outside the
+    validated set are dropped in post-processing, so nothing can be invented."""
+    allowed = list(validated["company"])
+    lines = []
+    for name in allowed:
+        c = comp_by[name]
+        prods = str(c["product and Services"])[:400]
+        lines.append(f"- {name} [{c['Sector']}]: {prods}")
+    needs_txt = "\n".join(f"- {n['capability']} (from brief: \"{n['quote']}\")" for n in needs)
+    prompt = f"""OPPORTUNITY: {opp_name}
+
+VERIFIED NEEDS (each grounded in the brief):
+{needs_txt}
+
+VALIDATED COMPANIES (the only companies you may reference, names exactly as given):
+{chr(10).join(lines)}
+
+For each need, list which validated companies (zero or more) can credibly supply
+or deliver it, each with a short reason grounded in their stated products.
+Return STRICT JSON only:
+{{"mapping": [{{"need": "...", "companies": [{{"name": "...", "why": "..."}}]}}]}}
+"""
+    for model in models:
+        try:
+            resp = client.chat.completions.create(
+                model=model, temperature=0,
+                messages=[{"role": "system", "content":
+                           "You map suppliers to requirements using only the companies provided."},
+                          {"role": "user", "content": prompt}],
+            )
+            content = re.sub(r"^```(?:json)?|```$", "",
+                             (resp.choices[0].message.content or "").strip()).strip()
+            mapping = json.loads(content).get("mapping", [])
+            for entry in mapping:
+                entry["companies"] = [c for c in entry.get("companies", [])
+                                      if isinstance(c, dict) and c.get("name") in allowed]
+            return mapping
+        except Exception:
+            continue
+    return []
+
+
+def build_consortium(chat_client, chat_models, df: pd.DataFrame,
+                     opps: pd.DataFrame, comp_by: dict, workers: int) -> tuple:
+    """Returns (rows for the Consortium_View sheet, number of ready opps)."""
+    cache = {}
+    if os.path.exists(NEEDS_CACHE):
+        try:
+            cache = json.load(open(NEEDS_CACHE))
+        except Exception:
+            cache = {}
+    validated_all = df[df["gpt_decision"].isin(["Direct", "Partial", "Yes"])]
+
+    def work(item):
+        _, opp = item
+        oname = opp["What is the opportunity name?"]
+        needs = extract_needs(chat_client, chat_models, opp, cache)
+        if len(needs) < MIN_VERIFIED_NEEDS:
+            return [{"opportunity": oname,
+                     "status": "Thin data - ranked view applies",
+                     "need": "", "source_quote": "", "covered_by": "",
+                     "why": "", "gap": ""}]
+        vcomp = validated_all[validated_all["opportunity"] == oname]
+        covered = {}
+        if len(vcomp):
+            for entry in map_consortium(chat_client, chat_models, oname, needs, vcomp, comp_by):
+                covered[_norm_quote(entry.get("need", ""))] = entry.get("companies", [])
+        def find_cover(capability):
+            nc = _norm_quote(capability)
+            for k, v in covered.items():
+                if k and (nc == k or nc in k or k in nc):
+                    return v
+            return []
+
+        rows = []
+        for n in needs:
+            comps = find_cover(n["capability"])
+            rows.append({
+                "opportunity": oname, "status": "Ready",
+                "need": n["capability"], "source_quote": n["quote"],
+                "covered_by": ", ".join(c["name"] for c in comps),
+                "why": " | ".join(f"{c['name']}: {c.get('why', '')}" for c in comps),
+                "gap": "" if comps else "GAP",
+            })
+        return rows
+
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, 6))) as ex:
+        results = list(ex.map(work, list(opps.iterrows())))
+    try:
+        os.makedirs(os.path.dirname(NEEDS_CACHE), exist_ok=True)
+        json.dump(cache, open(NEEDS_CACHE, "w"))
+    except Exception:
+        pass
+    rows = [r for rs in results for r in rs]
+    ready = len({r["opportunity"] for r in rows if r["status"] == "Ready"})
+    return rows, ready
 
 
 # --------------------------------- loaders --------------------------------
@@ -845,6 +1075,10 @@ def main():
                     help="skip company entity resolution (keep duplicate rows)")
     ap.add_argument("--no-escalate", action="store_true",
                     help="disable extra gate votes on split first rounds")
+    ap.add_argument("--no-consortium", action="store_true",
+                    help="skip the needs/consortium view")
+    ap.add_argument("--human-reviews", default=HUMAN_REVIEWS_CSV,
+                    help="CSV of analyst verdicts exported from the review GUI")
     ap.add_argument("--embed-blend", type=float, default=EMBED_FOCUS_BLEND,
                     help="weight (0-1) on the capability-focused embedding; "
                          "0 = disable (exact pre-focus behaviour)")
@@ -1045,11 +1279,22 @@ def main():
 
     df = df.drop(columns=["_i", "_j"])
 
+    # Human-in-the-loop: analyst verdicts override the gate in calibration and
+    # are surfaced as their own column so disagreements are visible.
+    human = load_human_reviews(args.human_reviews)
+    df["human_verdict"] = [
+        {1: "Agree", 0: "Disagree"}.get(human.get((r.company, r.opportunity), -1), "")
+        for r in df.itertuples()
+    ]
+    if human:
+        print(f"Human reviews loaded: {len(human)} verdicts from {args.human_reviews}.")
+
     # Calibrated probability from the accumulated label pool (audit M1).
-    cal = calibrate_probability(df)
+    cal = calibrate_probability(df, human_reviews=human)
     if cal:
         print(f"Calibration: match_probability fitted on {cal['n_labels']} labeled "
-              f"pairs ({cal['n_positive']} positive), final_score AUC = {cal['auc']}.")
+              f"pairs ({cal['n_positive']} positive, {cal['n_human']} human), "
+              f"final_score AUC = {cal['auc']}.")
     else:
         print("Calibration skipped: label pool too small (needs 30+ pairs, 8 per class).")
 
@@ -1085,6 +1330,18 @@ def main():
                 })
     abstain_df = pd.DataFrame(abstained)
 
+    # Consortium view (readiness-gated). Thin briefs fall back to the ranked
+    # view; rich briefs get a quote-grounded needs->suppliers map with GAPs.
+    consortium_rows, consortium_ready = [], 0
+    if gpt_ran and not args.no_consortium:
+        comp_by = {r["company_name"]: r for _, r in companies.iterrows()}
+        print("Building consortium view (quote-grounded needs, readiness-gated)...")
+        consortium_rows, consortium_ready = build_consortium(
+            chat_client, chat_models, df, opps, comp_by, args.workers)
+        n_gaps = sum(1 for r in consortium_rows if r["gap"] == "GAP")
+        print(f"Consortium: {consortium_ready}/{len(opps)} opportunities ready, "
+              f"{len(opps) - consortium_ready} fell back (thin data), {n_gaps} capability gaps.")
+
     opp_view = df[df["qualified"] & (df["rank_for_opportunity"] <= max(args.top_n, 5))].sort_values(
         ["opportunity", "rank_for_opportunity"]
     )
@@ -1112,7 +1369,10 @@ def main():
         {"metric": "duplicate_rows_merged", "value": n_merged},
         {"metric": "gate_unanimous_share", "value": _unanimous_share(df) if gpt_ran else "n/a"},
         {"metric": "calibration_labels", "value": cal["n_labels"] if cal else "insufficient"},
+        {"metric": "calibration_human_labels", "value": cal["n_human"] if cal else len(human)},
         {"metric": "calibration_auc_final_score", "value": cal["auc"] if cal else "insufficient"},
+        {"metric": "consortium_ready_opportunities",
+         "value": consortium_ready if (gpt_ran and not args.no_consortium) else "n/a"},
     ])
 
     os.makedirs(os.path.dirname(OUTPUT_XLSX), exist_ok=True)
@@ -1123,6 +1383,9 @@ def main():
             writer, sheet_name="All_Pairs", index=False)
         (abstain_df if len(abstain_df) else pd.DataFrame([{"opportunity": "-", "status": "All opportunities have a validated candidate"}])).to_excel(
             writer, sheet_name="Abstentions", index=False)
+        if consortium_rows:
+            pd.DataFrame(consortium_rows).to_excel(
+                writer, sheet_name="Consortium_View", index=False)
         diag.to_excel(writer, sheet_name="Diagnostics", index=False)
 
     print(f"\nSaved {OUTPUT_XLSX}")

@@ -121,3 +121,22 @@ Three further upgrades beyond the audit items:
    settled at 4/5; gate_unanimous_share is reported in Diagnostics (0.971).
 3. **Calibrated match_probability** (see M1 above), with calibration_labels and
    calibration_auc_final_score reported per run.
+
+## World-class pass 3 (2026-07-19): consortium view + human-in-the-loop
+
+1. **Readiness-gated consortium view.** Each opportunity is decomposed into the
+   capabilities it EXPLICITLY requires. Every extracted need must carry a
+   verbatim quote from the brief, verified in code (`quote_in_text`); fewer than
+   MIN_VERIFIED_NEEDS (3) verified needs marks the opportunity "thin data" and
+   it keeps the plain ranked view, so thin briefs can never produce invented
+   value chains. Ready opportunities get a needs-to-suppliers map built ONLY
+   from gate-validated companies; uncovered needs are reported as GAP rows, not
+   hidden. Output: Consortium_View sheet + a needs panel per opportunity in the
+   GUI. Verification run: 12/12 ready (this dataset follows the rich
+   questionnaire format), 72 honest capability gaps surfaced.
+2. **Human-in-the-loop.** The review GUI has minimal Agree / Not-a-fit buttons
+   per match and exports human_reviews.csv; saved as Data/human_reviews.csv it
+   is ingested on the next run. Analyst verdicts override the gate's own labels
+   in calibration (gold beats silver) at HUMAN_LABEL_WEIGHT (3x), and surface as
+   a human_verdict column in All_Pairs. Diagnostics reports
+   calibration_human_labels.
