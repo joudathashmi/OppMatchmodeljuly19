@@ -249,6 +249,45 @@ def test_apply_human_overrides_disagree_and_agree():
     assert df.loc[2, "validated_fit"] and df.loc[2, "ai_decision"] == "Partner Fit"
 
 
+# ------------------------------- anti-drift --------------------------------
+
+def test_rubric_hash_is_short_and_stable():
+    assert isinstance(m.RUBRIC_HASH, str) and len(m.RUBRIC_HASH) == 8
+    import hashlib
+    assert m.RUBRIC_HASH == hashlib.md5(
+        (m.GPT_SYSTEM_PROMPT + m.RUBRIC_CORE + m.EXEMPLAR_HEADER).encode()
+    ).hexdigest()[:8]
+
+
+def test_build_exemplar_lines_formats_and_keys():
+    companies = pd.DataFrame([
+        {"company_name": "Belden", "product and Services": "cables and connectivity"},
+    ])
+    lines = m.build_exemplar_lines(
+        {("Belden", "5G Macro"): 1, ("Ghost Co", "X"): 0}, companies)
+    d = dict(lines)
+    assert "FIT" in d[("Belden", "5G Macro")] and "cables" in d[("Belden", "5G Macro")]
+    assert "NOT A FIT" in d[("Ghost Co", "X")]  # unknown company still usable
+
+
+def test_compute_verdict_flips_detects_changes_only():
+    df = pd.DataFrame([
+        {"company": "A", "opportunity": "O", "gpt_decision": "No",
+         "gpt_agreement": "3/3", "human_verdict": ""},
+        {"company": "B", "opportunity": "O", "gpt_decision": "Partial",
+         "gpt_agreement": "3/3", "human_verdict": ""},
+        {"company": "C", "opportunity": "O", "gpt_decision": "",
+         "gpt_agreement": "", "human_verdict": ""},  # ungraded: ignored
+    ])
+    prior = {("A", "O"): {"decision": "Partial", "ts": "t1", "rubric": "old00000"},
+             ("B", "O"): {"decision": "Partial", "ts": "t1", "rubric": m.RUBRIC_HASH}}
+    flips = m.compute_verdict_flips(df, prior)
+    assert len(flips) == 1
+    f = flips[0]
+    assert f["company"] == "A" and f["previous_verdict"] == "Partial"
+    assert f["new_verdict"] == "No" and f["rubric_changed"] == "yes"
+
+
 # ---------------------------------- runner -------------------------------------
 
 def _run_all():

@@ -617,8 +617,11 @@ GPT_SYSTEM_PROMPT = (
 GPT_FIT_ORDER = ["No", "Partial", "Direct"]
 
 
-def _gpt_prompt(comp: pd.Series, opp: pd.Series) -> str:
-    return f"""Grade how well this COMPANY fits this investment OPPORTUNITY, using
+# The rubric is a versioned artifact: RUBRIC_HASH is stamped on every label so
+# calibration and the verdict-diff report can tell which judging regime a
+# verdict came from. Any edit to GPT_SYSTEM_PROMPT or RUBRIC_CORE changes the
+# hash automatically.
+RUBRIC_CORE = """Grade how well this COMPANY fits this investment OPPORTUNITY, using
 these tiers:
 
 - "Direct": the company is in the opportunity's sector AND its stated products/
@@ -637,8 +640,46 @@ linkage is "None". Commodity or generic-infrastructure supply (bulk chemicals,
 standard filtration, generic machining) to a specialized opportunity is "None"
 unless the opportunity's core work depends on that specific input — but when
 such a genuine-yet-insufficient supplier link exists, NAME IT in the
-explanation as context rather than ignoring it.
+explanation as context rather than ignoring it."""
 
+EXEMPLAR_HEADER = (
+    "ANALYST PRECEDENTS — verdicts on OTHER pairs from human review. They show\n"
+    "the analyst's standards for THOSE specific pairings. Do NOT generalize a\n"
+    "rejection beyond its case: judge THIS pair strictly on its own brief, and a\n"
+    "company supplying an input the brief explicitly requires remains at least\n"
+    "Partial regardless of the precedents below."
+)
+
+RUBRIC_HASH = hashlib.md5(
+    (GPT_SYSTEM_PROMPT + RUBRIC_CORE + EXEMPLAR_HEADER).encode()
+).hexdigest()[:8]
+
+
+def build_exemplar_lines(human: dict, companies: pd.DataFrame) -> list:
+    """Compact analyst-precedent lines for the gate prompt, one per human
+    verdict: [(pair, line)]. Phrasing is deliberately PAIR-SPECIFIC — an early
+    version said "this type of linkage" and the gate over-generalized, rejecting
+    pairs the analyst had explicitly approved. The caller excludes the pair
+    under judgment so the gate stays an independent judge of it."""
+    by_name = {r["company_name"]: r for _, r in companies.iterrows()}
+    out = []
+    for (comp, opp), label in human.items():
+        c = by_name.get(comp)
+        prods = str(c["product and Services"])[:140] if c is not None else ""
+        verdict = ("FIT — the analyst confirmed this supplier linkage for this opportunity"
+                   if label == 1 else
+                   "NOT A FIT — the analyst judged this particular linkage too peripheral for this opportunity")
+        out.append(((comp, opp),
+                    f"- {comp} -> {opp}: analyst verdict {verdict}. (Company offers: {prods})"))
+    return out
+
+
+def _gpt_prompt(comp: pd.Series, opp: pd.Series, exemplars: str = "") -> str:
+    precedent = ""
+    if exemplars:
+        precedent = f"\n{EXEMPLAR_HEADER}\n{exemplars}\n"
+    return f"""{RUBRIC_CORE}
+{precedent}
 Return STRICT JSON only:
 {{"fit": "Direct|Partial|None", "confidence": 0.0-1.0,
   "explanation": "2-4 sentences naming the specific capability/linkage that fits, or the specific gap (and any weaker supplier link worth noting)"}}
@@ -689,7 +730,7 @@ ESCALATION_VOTES = 2  # extra samples drawn when the first round is split
 
 
 def gpt_validate(client, models: list, comp: pd.Series, opp: pd.Series,
-                 votes: int = GPT_VOTES, escalate: bool = True):
+                 votes: int = GPT_VOTES, escalate: bool = True, exemplars: str = ""):
     """Self-consistency gate: sample the first working model `votes` times and
     majority-vote a graded verdict (Direct / Partial / No). Returns
     (fit, confidence, explanation, model, agreement); confidence = (winning
@@ -700,7 +741,7 @@ def gpt_validate(client, models: list, comp: pd.Series, opp: pd.Series,
     between runs at 2/3) are decided on 5 votes instead of 3. Ties resolve to
     the more conservative tier so the gate never over-promises.
     """
-    prompt = _gpt_prompt(comp, opp)
+    prompt = _gpt_prompt(comp, opp, exemplars=exemplars)
     for model in models:
         results = []
         for _ in range(max(1, votes)):
@@ -766,6 +807,41 @@ def load_human_reviews(path: str = HUMAN_REVIEWS_CSV) -> dict:
     return out
 
 
+def load_prior_verdicts(path: str = LABELS_JSONL) -> dict:
+    """Latest recorded gate verdict per pair, from before this run's append."""
+    prior = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                d = json.loads(line)
+                prior[(d["company"], d["opportunity"])] = d
+    except FileNotFoundError:
+        pass
+    return prior
+
+
+def compute_verdict_flips(df: pd.DataFrame, prior: dict) -> list:
+    """Pairs whose gate verdict changed vs the previous recorded verdict.
+    Nothing may change silently: these are printed and written to the
+    Verdict_Changes sheet every run."""
+    flips = []
+    for r in df.itertuples():
+        g = r.gpt_decision
+        if g not in ("Direct", "Partial", "Yes", "No"):
+            continue
+        p = prior.get((r.company, r.opportunity))
+        if p and p["decision"] != g:
+            flips.append({
+                "company": r.company, "opportunity": r.opportunity,
+                "previous_verdict": p["decision"],
+                "previous_ts": p.get("ts", ""),
+                "rubric_changed": "yes" if p.get("rubric", "") != RUBRIC_HASH else "no",
+                "new_verdict": g, "agreement": r.gpt_agreement,
+                "human_verdict": getattr(r, "human_verdict", ""),
+            })
+    return flips
+
+
 def apply_human_overrides(df: pd.DataFrame, human: dict) -> int:
     """Analyst verdicts outrank the gate in the OUTPUT, not just in calibration.
 
@@ -809,7 +885,10 @@ def calibrate_probability(df: pd.DataFrame, human_reviews: dict | None = None) -
             for line in fh:
                 d = json.loads(line)
                 y = 1 if d["decision"] in ("Direct", "Partial", "Yes") else 0
-                pool[(d["company"], d["opportunity"])] = (float(d["final_score"]), y, 1.0)
+                # Labels from an older rubric were judged under a different
+                # standard: keep them (signal) but at reduced weight.
+                w = 1.0 if d.get("rubric", "") == RUBRIC_HASH else 0.6
+                pool[(d["company"], d["opportunity"])] = (float(d["final_score"]), y, w)
     except FileNotFoundError:
         pass
 
@@ -1245,6 +1324,15 @@ def main():
     df["rank_for_opportunity"] = qualified_rank("opportunity")
     df["rank_for_company"] = qualified_rank("company")
 
+    # Human reviews load BEFORE the gate: they feed it as analyst precedents
+    # (few-shot exemplars) and later override the output. Prior verdicts load
+    # before this run appends, for the drift report.
+    human = load_human_reviews(args.human_reviews)
+    if human:
+        print(f"Human reviews loaded: {len(human)} verdicts from {args.human_reviews}.")
+    exemplar_pairs = build_exemplar_lines(human, companies)
+    prior_verdicts = load_prior_verdicts()
+
     # FIX 9 — GPT validation on frozen scores, qualified top-N only
     df["gpt_decision"] = ""
     df["gpt_confidence"] = np.nan
@@ -1260,9 +1348,14 @@ def main():
         # and write results back to the frame afterwards (single-threaded writes).
         def _validate(item):
             idx, row = item
+            # Analyst precedents, excluding the pair under judgment so the gate
+            # stays an independent judge of it (disagreement stays visible).
+            lines = [l for p, l in exemplar_pairs
+                     if p != (row["company"], row["opportunity"])][-8:]
             return idx, row, gpt_validate(
                 chat_client, chat_models, companies.loc[row["_i"]], opps.loc[row["_j"]],
                 votes=args.gpt_votes, escalate=not args.no_escalate,
+                exemplars="\n".join(lines),
             )
 
         with ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
@@ -1282,7 +1375,7 @@ def main():
                 "ts": datetime.now(timezone.utc).isoformat(),
                 "company": row["company"], "opportunity": row["opportunity"],
                 "decision": decision, "confidence": conf, "agreement": agreement,
-                "model": model, "votes": args.gpt_votes,
+                "model": model, "votes": args.gpt_votes, "rubric": RUBRIC_HASH,
                 "final_score": row["final_score"], "embed_mode": mode,
             })
         if labels:
@@ -1319,15 +1412,24 @@ def main():
     # surfaced as their own column so overrides stay visible.
     df["validated_fit"] = df["gpt_decision"].isin(["Direct", "Partial", "Yes"])
     n_over = 0
-    human = load_human_reviews(args.human_reviews)
     df["human_verdict"] = [
         {1: "Agree", 0: "Disagree"}.get(human.get((r.company, r.opportunity), -1), "")
         for r in df.itertuples()
     ]
     if human:
         n_over = apply_human_overrides(df, human)
-        print(f"Human reviews loaded: {len(human)} verdicts from {args.human_reviews}; "
-              f"{n_over} pair(s) overridden in the output.")
+        print(f"Analyst overrides applied to {n_over} pair(s).")
+
+    # Drift report: no gate verdict may change silently between runs.
+    flips = compute_verdict_flips(df, prior_verdicts)
+    if flips:
+        print(f"VERDICT CHANGES vs previous run ({len(flips)}):")
+        for f in flips:
+            tag = "rubric changed" if f["rubric_changed"] == "yes" else "same rubric"
+            print(f"  {f['company'][:26]:28} -> {f['opportunity'][:40]:42} "
+                  f"{f['previous_verdict']} -> {f['new_verdict']}  ({tag})")
+    elif gpt_ran:
+        print("Verdict drift: none vs previous run.")
 
     # Calibrated probability from the accumulated label pool (audit M1).
     cal = calibrate_probability(df, human_reviews=human)
@@ -1410,6 +1512,8 @@ def main():
         {"metric": "calibration_labels", "value": cal["n_labels"] if cal else "insufficient"},
         {"metric": "calibration_human_labels", "value": cal["n_human"] if cal else len(human)},
         {"metric": "human_overrides_applied", "value": n_over},
+        {"metric": "rubric_version", "value": RUBRIC_HASH},
+        {"metric": "gate_verdict_flips_vs_prev", "value": len(flips)},
         {"metric": "calibration_auc_final_score", "value": cal["auc"] if cal else "insufficient"},
         {"metric": "consortium_ready_opportunities",
          "value": consortium_ready if (gpt_ran and not args.no_consortium) else "n/a"},
@@ -1426,6 +1530,8 @@ def main():
         if consortium_rows:
             pd.DataFrame(consortium_rows).to_excel(
                 writer, sheet_name="Consortium_View", index=False)
+        if flips:
+            pd.DataFrame(flips).to_excel(writer, sheet_name="Verdict_Changes", index=False)
         diag.to_excel(writer, sheet_name="Diagnostics", index=False)
 
     print(f"\nSaved {OUTPUT_XLSX}")

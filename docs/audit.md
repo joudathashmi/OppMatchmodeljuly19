@@ -140,3 +140,28 @@ Three further upgrades beyond the audit items:
    in calibration (gold beats silver) at HUMAN_LABEL_WEIGHT (3x), and surface as
    a human_verdict column in All_Pairs. Diagnostics reports
    calibration_human_labels.
+
+## World-class pass 4 (2026-07-19): anti-drift instrumentation
+
+Motivated by a real incident: a one-sentence rubric edit silently changed 3
+verdicts. Three mechanisms now prevent silent drift:
+
+1. **Verdict-diff report.** Every run compares each graded pair's verdict with
+   the last recorded verdict and prints the flips, writes a Verdict_Changes
+   sheet, and reports gate_verdict_flips_vs_prev in Diagnostics. Nothing
+   changes silently anymore.
+2. **Rubric versioning.** RUBRIC_HASH (md5 of the system prompt + rubric core +
+   exemplar header) is stamped on every label in gpt_labels.jsonl; the diff
+   report marks whether a flip crossed a rubric change, and calibration
+   down-weights labels from older rubric versions (0.6x).
+3. **Example-based feedback.** Human verdicts are injected into the gate prompt
+   as analyst precedents (self-pair excluded so the gate stays an independent
+   judge). The first version over-generalized - phrased as "this type of
+   linkage", 4 rejections taught the gate to reject supplier links wholesale,
+   flipping 7 verdicts including a pair the analyst had explicitly approved.
+   The drift report caught it on its first run. Fix: pair-specific phrasing
+   plus an explicit anti-generalization guard in the header ("a company
+   supplying an input the brief explicitly requires remains at least Partial").
+   After the fix the wrong flips recovered and a confirmation run showed zero
+   drift. This incident is kept here deliberately: it is the concrete proof of
+   why the instrumentation exists.
