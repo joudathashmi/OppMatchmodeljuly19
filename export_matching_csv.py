@@ -18,11 +18,17 @@ REUSED verbatim, so the CSV never contradicts the workbook on the same pair; onl
 the long-tail pairs the gate never saw are judged here, with the same rubric. The
 narrative fields (ai_insight, suggested_plan, match_reason) are always generated.
 
-Conventions taken from the reference file:
+Output schema conventions:
   - sector_similarity is 1 only when company_sector == opportunity_sector.
-  - ai_score is 1 for Yes, 0 for No.
-  - suggested_plan / match_reason are JSON arrays of 3 strings.
-  - ai_decision maps from the graded gate: Direct or Partial -> Yes, None -> No.
+  - profile/product/final scores are decimals clamped to [0, 1].
+  - ai_score is 1 for Yes, 0 for No; ai_decision follows ai_score.
+  - ai_explanation: investment rationale for Yes rows; why-not for No rows.
+  - ai_insight, suggested_plan and match_reason are populated for recommended
+    (Yes) matches only - suggested_plan / match_reason as JSON arrays of exactly
+    three strings - and left blank for No rows.
+  - rank orders opportunities per company by final_score (1 = best).
+  - ai_decision maps from the graded gate: Direct or Partial -> Yes, None -> No;
+    analyst overrides outrank the gate.
 
 IDs are sequential surrogates (companies 1..N in spreadsheet order, likewise
 opportunities). They do NOT correspond to any production database.
@@ -271,6 +277,10 @@ def main():
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         results = dict(ex.map(work, list(sel.iterrows())))
 
+    def unit(v) -> float:
+        """Decimal in [0, 1] as the schema requires (cosines can dip below 0)."""
+        return round(min(max(float(v), 0.0), 1.0), 3)
+
     rows = []
     for i, row in sel.iterrows():
         g = results[i]
@@ -283,16 +293,18 @@ def main():
             "company_sector": cs,
             "opportunity_sector": os_,
             "sector_similarity": 1 if cs == os_ else 0,
-            "profile_similarity": round(float(row["raw_profile_cosine"]), 3),
-            "product_similarity": round(float(row["raw_product_cosine"]), 3),
+            "profile_similarity": unit(row["raw_profile_cosine"]),
+            "product_similarity": unit(row["raw_product_cosine"]),
             "ai_score": 1 if yes else 0,
             "ai_decision": "Yes" if yes else "No",
-            "final_score": round(float(row["final_score"]), 3),
+            "final_score": unit(row["final_score"]),
             "ai_explanation": g["ai_explanation"],
             "rank": int(row["rank"]),
-            "ai_insight": g["ai_insight"],
-            "suggested_plan": json.dumps(g["suggested_plan"], ensure_ascii=False),
-            "match_reason": json.dumps(g["match_reason"], ensure_ascii=False),
+            # Schema: insight, plan and reason are populated for recommended
+            # matches only; blank for No rows.
+            "ai_insight": g["ai_insight"] if yes else "",
+            "suggested_plan": json.dumps(g["suggested_plan"], ensure_ascii=False) if yes else "",
+            "match_reason": json.dumps(g["match_reason"], ensure_ascii=False) if yes else "",
         })
 
     n_failed = sum(1 for g in results.values() if g["error"])
