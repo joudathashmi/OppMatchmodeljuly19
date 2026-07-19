@@ -233,6 +233,22 @@ def test_load_human_reviews_missing_file_is_empty():
     assert m.load_human_reviews("/nonexistent/nowhere.csv") == {}
 
 
+def test_apply_human_overrides_disagree_and_agree():
+    df = pd.DataFrame([
+        {"company": "A", "opportunity": "O1", "validated_fit": True,
+         "ai_decision": "Partner Fit"},   # analyst rejects
+        {"company": "B", "opportunity": "O1", "validated_fit": False,
+         "ai_decision": "Low Fit"},       # analyst validates
+        {"company": "C", "opportunity": "O1", "validated_fit": True,
+         "ai_decision": "Partner Fit"},   # untouched
+    ])
+    changed = m.apply_human_overrides(df, {("A", "O1"): 0, ("B", "O1"): 1})
+    assert changed == 2
+    assert not df.loc[0, "validated_fit"] and df.loc[0, "ai_decision"] == "Low Fit"
+    assert df.loc[1, "validated_fit"] and df.loc[1, "ai_decision"] == "Partner Fit"
+    assert df.loc[2, "validated_fit"] and df.loc[2, "ai_decision"] == "Partner Fit"
+
+
 # ---------------------------------- runner -------------------------------------
 
 def _run_all():

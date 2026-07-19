@@ -633,11 +633,15 @@ these tiers:
 
 Be strict about the Direct/Partial boundary and the Partial/None boundary: a
 plausible-sounding adjacency with no named component, material, or technology
-linkage is "None".
+linkage is "None". Commodity or generic-infrastructure supply (bulk chemicals,
+standard filtration, generic machining) to a specialized opportunity is "None"
+unless the opportunity's core work depends on that specific input — but when
+such a genuine-yet-insufficient supplier link exists, NAME IT in the
+explanation as context rather than ignoring it.
 
 Return STRICT JSON only:
 {{"fit": "Direct|Partial|None", "confidence": 0.0-1.0,
-  "explanation": "2-4 sentences naming the specific capability/linkage that fits, or the specific gap"}}
+  "explanation": "2-4 sentences naming the specific capability/linkage that fits, or the specific gap (and any weaker supplier link worth noting)"}}
 
 COMPANY
   Name: {comp['company_name']}
@@ -760,6 +764,32 @@ def load_human_reviews(path: str = HUMAN_REVIEWS_CSV) -> dict:
         out[(str(r.get("company", "")).strip(),
              str(r.get("opportunity", "")).strip())] = label
     return out
+
+
+def apply_human_overrides(df: pd.DataFrame, human: dict) -> int:
+    """Analyst verdicts outrank the gate in the OUTPUT, not just in calibration.
+
+    Requires a `validated_fit` boolean column (gate-endorsed pairs). A human
+    "disagree" pulls the pair out of the validated set and forces Low Fit; a
+    human "agree" validates the pair (Partner Fit if the label was pessimistic).
+    Returns the number of pairs actually changed. The gate's own verdict columns
+    are left untouched — the override is visible via human_verdict.
+    """
+    changed = 0
+    for idx, r in df.iterrows():
+        hv = human.get((r["company"], r["opportunity"]))
+        if hv is None:
+            continue
+        if hv == 0 and (r["validated_fit"] or r["ai_decision"] != "Low Fit"):
+            df.at[idx, "validated_fit"] = False
+            df.at[idx, "ai_decision"] = "Low Fit"
+            changed += 1
+        elif hv == 1 and not r["validated_fit"]:
+            df.at[idx, "validated_fit"] = True
+            if r["ai_decision"] in ("", "Low Fit", "Review Needed"):
+                df.at[idx, "ai_decision"] = "Partner Fit"
+            changed += 1
+    return changed
 
 
 def calibrate_probability(df: pd.DataFrame, human_reviews: dict | None = None) -> dict | None:
@@ -944,7 +974,12 @@ def build_consortium(chat_client, chat_models, df: pd.DataFrame,
             cache = json.load(open(NEEDS_CACHE))
         except Exception:
             cache = {}
-    validated_all = df[df["gpt_decision"].isin(["Direct", "Partial", "Yes"])]
+    # Respect analyst overrides: only pairs still validated after human review
+    # may appear as need-coverers.
+    if "validated_fit" in df.columns:
+        validated_all = df[df["validated_fit"]]
+    else:
+        validated_all = df[df["gpt_decision"].isin(["Direct", "Partial", "Yes"])]
 
     def work(item):
         _, opp = item
@@ -1279,15 +1314,20 @@ def main():
 
     df = df.drop(columns=["_i", "_j"])
 
-    # Human-in-the-loop: analyst verdicts override the gate in calibration and
-    # are surfaced as their own column so disagreements are visible.
+    # Human-in-the-loop: analyst verdicts override the gate in the output
+    # (validated set + labels), feed calibration at higher weight, and are
+    # surfaced as their own column so overrides stay visible.
+    df["validated_fit"] = df["gpt_decision"].isin(["Direct", "Partial", "Yes"])
+    n_over = 0
     human = load_human_reviews(args.human_reviews)
     df["human_verdict"] = [
         {1: "Agree", 0: "Disagree"}.get(human.get((r.company, r.opportunity), -1), "")
         for r in df.itertuples()
     ]
     if human:
-        print(f"Human reviews loaded: {len(human)} verdicts from {args.human_reviews}.")
+        n_over = apply_human_overrides(df, human)
+        print(f"Human reviews loaded: {len(human)} verdicts from {args.human_reviews}; "
+              f"{n_over} pair(s) overridden in the output.")
 
     # Calibrated probability from the accumulated label pool (audit M1).
     cal = calibrate_probability(df, human_reviews=human)
@@ -1304,7 +1344,6 @@ def main():
     # partner/supplier). The bridges qualify industrial companies for pharma/
     # medtech opps, but if the gate finds no real linkage the opportunity has no
     # validated fit in the current company set and should say so.
-    validated_tiers = ("Direct", "Partial", "Yes")
     abstained = []
     for opp_name, grp in df.groupby("opportunity"):
         if not grp["qualified"].any():
@@ -1318,7 +1357,7 @@ def main():
             continue
         if gpt_ran:
             validated = grp[grp["gpt_decision"].isin(["Direct", "Partial", "Yes", "No"])]
-            if len(validated) and not grp["gpt_decision"].isin(validated_tiers).any():
+            if len(validated) and not grp["validated_fit"].any():
                 best = validated.sort_values("final_score", ascending=False).iloc[0]
                 abstained.append({
                     "opportunity": opp_name,
@@ -1370,6 +1409,7 @@ def main():
         {"metric": "gate_unanimous_share", "value": _unanimous_share(df) if gpt_ran else "n/a"},
         {"metric": "calibration_labels", "value": cal["n_labels"] if cal else "insufficient"},
         {"metric": "calibration_human_labels", "value": cal["n_human"] if cal else len(human)},
+        {"metric": "human_overrides_applied", "value": n_over},
         {"metric": "calibration_auc_final_score", "value": cal["auc"] if cal else "insufficient"},
         {"metric": "consortium_ready_opportunities",
          "value": consortium_ready if (gpt_ran and not args.no_consortium) else "n/a"},

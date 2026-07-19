@@ -40,8 +40,11 @@ def _clean(v):
 def build_payload(xlsx: str) -> dict:
     allp = pd.read_excel(xlsx, sheet_name="All_Pairs")
 
-    # A "match" is only what the gate actually endorsed.
-    matched = allp[allp["gpt_decision"].isin(["Direct", "Partial", "Yes"])].copy()
+    # A "match" is what survived the gate AND any analyst overrides.
+    if "validated_fit" in allp.columns:
+        matched = allp[allp["validated_fit"] == True].copy()  # noqa: E712
+    else:
+        matched = allp[allp["gpt_decision"].isin(["Direct", "Partial", "Yes"])].copy()
     matched = matched.sort_values(["opportunity", "final_score"], ascending=[True, False])
 
     # Consortium view (optional sheet; readiness-gated upstream).

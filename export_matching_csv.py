@@ -101,7 +101,9 @@ WRITING STYLE (match this exactly):
   "cannot", and do not dwell on limitations.
 - If fit is None (not a match), begin ai_explanation with "No." then give 2-3
   sentences on why the company's core competency does not align with the
-  opportunity.
+  opportunity. If a genuine but insufficient supplier link exists (e.g. the
+  company supplies commodity inputs or generic infrastructure the project would
+  buy anyway), acknowledge it in one clause as context instead of ignoring it.
 
 Return STRICT JSON only, no markdown:
 {{
@@ -237,13 +239,19 @@ def main():
 
     def work(i_row):
         i, row = i_row
-        # Reuse the gate's VERDICT (so the CSV never contradicts the workbook)
-        # by forcing it into the generation, so the affirmative reference-style
-        # explanation always matches the final Yes/No.
+        # Reuse the workbook's VERDICT (so the CSV never contradicts it) by
+        # forcing it into the generation, so the affirmative reference-style
+        # explanation always matches the final Yes/No. Analyst overrides
+        # (human_verdict) outrank the gate.
+        human = str(row.get("human_verdict", "")).strip()
         gate = str(row.get("gpt_decision", "")).strip() if has_gate else ""
         forced = None
         from_gate = False
-        if gate in ("Direct", "Partial", "Yes"):
+        if human == "Disagree":
+            forced, from_gate = "No", True
+        elif human == "Agree":
+            forced, from_gate = "Yes", True
+        elif gate in ("Direct", "Partial", "Yes"):
             forced, from_gate = "Yes", True
         elif gate == "No":
             forced, from_gate = "No", True
