@@ -700,7 +700,11 @@ def main():
                 for k, v in g.items():
                     out_rows.at[idx, k] = v
 
-    out = out_rows.sort_values(["company_id", "rank"])[COLUMNS]
+    # Deliverable ordering: best decisions first, then score - the file opens
+    # on the recommendations, not on an alphabetical wall of Potential rows.
+    out_rows["_tier"] = out_rows["decision"].map({t: i for i, t in enumerate(TIER_ORDER)})
+    out = out_rows.sort_values(["_tier", "final_score"],
+                               ascending=[True, False])[COLUMNS]
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
     out.to_csv(OUTPUT_CSV, index=False)
 
