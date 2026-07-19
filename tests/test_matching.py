@@ -288,6 +288,56 @@ def test_compute_verdict_flips_detects_changes_only():
     assert f["new_verdict"] == "No" and f["rubric_changed"] == "yes"
 
 
+# ------------------------------ v3 investment engine ---------------------------
+
+import matching_v3 as v3  # noqa: E402
+
+
+def test_v3_sector_similarity_no_more_zeros():
+    # the spec's broken case: different naming conventions must not yield 0
+    assert v3.sector_similarity("industrial manufacturing", "ict hardware") == 0.45
+    assert v3.sector_similarity("industrial chemicals", "pharmaceutical manufacturing") == 0.55
+    assert v3.sector_similarity("biotechnology", "pharmaceutical manufacturing") == 0.65
+    assert v3.sector_similarity("ict hardware", "ict hardware") == 1.0
+    # parent-child
+    assert v3.sector_similarity("industrial", "industrial manufacturing") == 0.80
+    # genuinely unrelated stays low
+    assert v3.sector_similarity("mining & minerals", "pharmaceutical manufacturing") <= 0.2
+
+
+def test_v3_sector_synonyms():
+    assert v3.normalize_sector_label("MedTech") == "medical devices"
+    assert v3.normalize_sector_label("Pharmaceutical") == "pharmaceutical manufacturing"
+    assert v3.normalize_sector_label("Oil, Gas, Energy & Water") == "energy"
+
+
+def test_v3_value_chain_spec_examples():
+    # Drug Developer vs: chemical supplier Low, biotech Very High, API mfr Medium
+    assert v3.value_chain_score(["Developer"], "Raw Material Supplier") <= 0.2
+    assert v3.value_chain_score(["Developer"], "Research Company") >= 0.85
+    assert 0.4 <= v3.value_chain_score(["Developer"], "Contract Manufacturer") <= 0.6
+
+
+def test_v3_penalties_stack_on_supplier_to_developer():
+    factor, names = v3.compute_penalties(0.2, 0.4, 0.8, 0.15,
+                                         "Raw Material Supplier", ["Developer"])
+    assert "supplier_to_developer" in names and "sector_mismatch" in names
+    assert factor < 0.5  # multiple penalties compound
+
+
+def test_v3_decide_hierarchy():
+    assert v3.decide(0.8, "No", "", True) == "Weak Match"       # gate rejects
+    assert v3.decide(0.8, "Partial", "", True) == "Strong Match"  # supplier caps below Excellent
+    assert v3.decide(0.2, "No", "Agree", True) == "Good Match"  # analyst floor
+    assert v3.decide(0.9, "", "Disagree", False) == "Poor Match"  # analyst kill
+    assert v3.decide(0.9, "", "", False) == "Potential Match"   # unvetted ceiling
+
+
+def test_v3_confidence_bounds():
+    c = v3.confidence_score(600, 1500, 0.8, [0.5, 0.55, 0.5, 0.6, 0.5], "3/3")
+    assert 0 <= c <= 100 and v3.confidence_label(c) in ("High", "Medium", "Low")
+
+
 # ---------------------------------- runner -------------------------------------
 
 def _run_all():
