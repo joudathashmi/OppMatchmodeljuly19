@@ -69,17 +69,28 @@ COLUMNS = [
 ]
 
 SYSTEM = (
-    "You are an investment-promotion analyst at MISA (Saudi Arabia) writing "
-    "concise, professional match rationales for a business-development team. You "
-    "judge fit accurately, but you WRITE like an analyst recommending or "
-    "dismissing an opportunity, not like a skeptic. Judge only from the evidence "
-    "given; never invent capabilities."
+    "You are a senior industrial analyst at MISA (Saudi Arabia) writing match "
+    "rationales a business-development team will act on. Every rationale must be "
+    "SPECIFIC TO THIS PAIR: cite named products, value-chain stages, materials "
+    "and market facts from the texts. Formulaic phrasing is a defect - if a "
+    "sentence could be pasted into a different company's row unchanged, rewrite "
+    "it. Judge only from the evidence given; never invent capabilities."
 )
+
+# Rotating opening directives: without them the model writes every explanation
+# on the same skeleton ("X is a strong partner for...", 305 times).
+OPENERS = [
+    "open ai_explanation with the opportunity's requirement or value-chain stage",
+    "open ai_explanation with the company's single most relevant product line or capability",
+    "open ai_explanation with the decisive point of alignment or the decisive gap",
+    "open ai_explanation with the demand or market context the opportunity sits in",
+]
 
 _print_lock = threading.Lock()
 
 
-def prompt_for(comp, opp, forced=None) -> str:
+def prompt_for(comp, opp, forced=None, opener: str = "") -> str:
+    opener_line = opener or "vary your opening naturally"
     directive = ""
     if forced == "Yes":
         directive = ("\nDECISION ALREADY MADE: this pairing IS a positive match. Set fit "
@@ -99,20 +110,35 @@ First grade "fit" internally as one of:
 - "None": only a generic sector or keyword overlap, a different end-product, or
   no real linkage.
 
-WRITING STYLE (match this exactly):
-- If fit is Direct or Partial (a positive match), write ai_explanation as 3-4
-  AFFIRMATIVE sentences: how the company's specific expertise and named products
-  align with the opportunity, why it is a reliable manufacturer / supplier /
-  partner for delivering or localizing this in the KSA / MENA region, and the
-  strategic value (technology transfer, import substitution, local capability
-  building, supporting Vision 2030). Frame a Partial company positively as a
-  "reliable supplier" or "strong partner". Do NOT use the words "however" or
-  "cannot", and do not dwell on limitations.
-- If fit is None (not a match), begin ai_explanation with "No." then give 2-3
-  sentences on why the company's core competency does not align with the
-  opportunity. If a genuine but insufficient supplier link exists (e.g. the
-  company supplies commodity inputs or generic infrastructure the project would
-  buy anyway), acknowledge it in one clause as context instead of ignoring it.
+WRITING STYLE (strict):
+- Ground every claim: cite at least TWO concrete specifics from the OPPORTUNITY
+  (a value-chain stage, a named required material or component, a demand driver
+  or market fact) and at least TWO from the COMPANY (named product lines or
+  services, sectors served, scale or footprint facts). No generic claims.
+- BANNED phrases (using any is a defect): "strong partner", "reliable
+  supplier", "aligns well", "well-positioned", "leveraging", "expertise in",
+  "extensive experience", "proven track record", "supports Vision 2030".
+  Mention Vision 2030 only through a concrete mechanism (e.g. import
+  substitution of a named product), if at all.
+- Vary structure across fields and rows: {opener_line}. Do NOT open
+  ai_explanation with the company name, and do not reuse one sentence skeleton
+  across the fields.
+- ai_explanation, positive match: 4-6 sentences of analysis - which stage(s)
+  of the opportunity's value chain the company would cover and with which
+  named products, what it would NOT cover, and the concrete consequence of
+  engaging it (a supply localized, an import avoided, a dependency reduced).
+- ai_explanation, non-match: begin with "No." then 3-4 sentences on the
+  decisive capability gap, stated factually; if a genuine but insufficient
+  supplier link exists, name it in one clause instead of ignoring it.
+- profile_match_reason: 1-2 sentences on identity, scale and sectors served,
+  citing profile facts; do not repeat product detail here.
+- product_match_reason: 1-2 sentences mapping named products to named
+  opportunity requirements (or naming exactly what is missing).
+- ai_insight (positive only): one NON-OBVIOUS implication - localization
+  economics, supply-chain risk, export angle - never a restatement of the
+  explanation.
+- suggested_plan: 3 actions specific to THIS pair, each naming a product,
+  stage or counterpart; generic business-development steps are a defect.
 
 Return STRICT JSON only, no markdown:
 {{
@@ -152,20 +178,21 @@ def _as3(v) -> list:
     return (out + [""] * 3)[:3] if out else ["", "", ""]
 
 
-def generate(client, comp, opp, forced=None) -> dict:
+def generate(client, comp, opp, forced=None, opener: str = "") -> dict:
     """Generate the narrative fields for one pair.
 
     `forced` ("Yes"/"No"/None) pins the verdict up front so the explanation and
-    the decision never contradict each other. On total failure returns an
-    "error" so the caller can report it rather than silently emitting a blank
-    row that reads like a genuine "No".
+    the decision never contradict each other. `opener` rotates the structural
+    directive so rows do not share one sentence skeleton. On total failure
+    returns an "error" so the caller can report it rather than silently
+    emitting a blank row that reads like a genuine "No".
     """
-    prompt = prompt_for(comp, opp, forced=forced)
+    prompt = prompt_for(comp, opp, forced=forced, opener=opener)
     last_err = ""
     for model in MODEL_CHAIN:
         try:
             resp = client.chat.completions.create(
-                model=model, temperature=0.2,
+                model=model, temperature=0.55,
                 messages=[{"role": "system", "content": SYSTEM},
                           {"role": "user", "content": prompt}],
             )
@@ -269,7 +296,8 @@ def main():
             forced, from_gate = "Yes", True
         elif gate == "No":
             forced, from_gate = "No", True
-        g = generate(client, comp_by[row["company"]], opp_by[row["opportunity"]], forced=forced)
+        g = generate(client, comp_by[row["company"]], opp_by[row["opportunity"]],
+                     forced=forced, opener=OPENERS[i % len(OPENERS)])
         g["from_gate"] = from_gate
         with _print_lock:
             done[0] += 1
