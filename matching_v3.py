@@ -459,12 +459,25 @@ def enrich_all(client, models, companies, opps, workers=8):
 NARRATIVE_SYSTEM = (
     "You are a senior investment advisor at MISA writing balanced, decision-"
     "ready assessments. Ground every claim in the given texts; name products, "
-    "stages and gaps. Formulaic phrasing is a defect. BANNED: 'strong partner', "
-    "'reliable supplier', 'aligns well', 'well-positioned', 'leveraging', "
-    "'expertise in', 'proven track record'.")
+    "stages and gaps. Formulaic phrasing is a defect: if a sentence frame could "
+    "be reused across many rows unchanged, rewrite it. BANNED everywhere: "
+    "'strong partner', 'reliable supplier', 'aligns well', 'well-positioned', "
+    "'leveraging', 'expertise in', 'proven track record', 'facilitate'.")
+
+# Rotating structural directives - without them every field converges on one
+# sentence skeleton across the file (e.g. 304/305 rows once began
+# "Invest Saudi should facilitate...").
+NARRATIVE_OPENERS = [
+    "open fields with the opportunity requirement or value-chain stage at stake",
+    "open fields with the company's most relevant named product or capability",
+    "open fields with the decisive point: the strongest alignment or the decisive gap",
+    "open fields with the demand, market or localization context",
+]
 
 
-def narrative_prompt(comp, opp, decision, vc_role, required_roles) -> str:
+def narrative_prompt(comp, opp, decision, vc_role, required_roles,
+                     opener: str = "") -> str:
+    opener_line = opener or "vary the opening of every field naturally"
     return f"""Write the investment assessment for this pairing. The decision is
 already made: "{decision}". Company value-chain role: {vc_role or 'unknown'};
 the opportunity needs: {', '.join(required_roles or ['unknown'])}.
@@ -472,19 +485,21 @@ the opportunity needs: {', '.join(required_roles or ['unknown'])}.
 STYLE RULES (violating any is a defect):
 - NEVER use these words/phrases: "expertise in", "leveraging", "leverage",
   "strong partner", "reliable supplier", "aligns well", "well-positioned",
-  "proven track record", "extensive experience". Say what the company DOES
-  and MAKES instead of characterizing its expertise.
+  "proven track record", "extensive experience", "facilitate". Say what the
+  company DOES and MAKES instead of characterizing its expertise.
 - Ground every claim in the texts: name products, value-chain stages,
   materials, and market facts. A sentence that could be pasted into another
   company's assessment unchanged must be rewritten.
+- Structure: {opener_line}. Do NOT open every field with the company name,
+  and do not reuse one sentence skeleton across the fields.
 
 Return STRICT JSON only:
-{{"strengths": "2-3 sentences: what genuinely matches, citing named products and value-chain stages",
-  "risks": "2-3 sentences: concerns, missing capabilities, incompatibilities; be specific",
-  "recommended_engagement": "1-2 sentences: how Invest Saudi should engage (or why not to)",
+{{"strengths": "2-3 sentences: what genuinely matches, citing named products and value-chain stages. Do NOT open with the company name - open with the capability or the requirement it meets",
+  "risks": "2-3 sentences naming the decisive gaps through DIFFERENT lenses (capability, certification/regulatory, business model, geography/market). Do NOT open with 'The opportunity requires', 'The company', or 'No evidence' - state the gap as a concrete fact instead (e.g. 'X has never assembled server-grade hardware; its lines run Y')",
+  "recommended_engagement": "1-2 sentences in IMPERATIVE voice, starting with a specific action verb of your own choosing - VARY the verb, do not default to 'Pair' - naming the counterpart entities and the mechanism. NEVER begin with 'Invest Saudi'",
   "suggested_localization_model": "one of: Greenfield manufacturing | Regional assembly | Joint venture | Licensing and technology transfer | Supplier localization | Distribution partnership | Not recommended",
-  "match_reason": ["3 factual reasons for the decision", "...", "..."],
-  "executive_summary": "2-3 sentences an investment manager reads first; balanced, specific, decisive"}}
+  "match_reason": ["3 factual reasons, each citing a DIFFERENT kind of evidence (product fit, value-chain position, market/footprint); none may start with 'The company'", "...", "..."],
+  "executive_summary": "2-3 sentences an investment manager reads first; balanced, specific, decisive. Do NOT open with the company name - open with the verdict logic or the decisive fact"}}
 
 COMPANY
   Name: {comp['company_name']}
@@ -521,9 +536,11 @@ def normalize_localization(value: str, decision: str) -> str:
     return "Supplier localization" if positive else "Not recommended"
 
 
-def generate_narrative(client, models, comp, opp, decision, vc_role, required_roles):
+def generate_narrative(client, models, comp, opp, decision, vc_role,
+                       required_roles, opener: str = ""):
     out = _chat_json(client, models, NARRATIVE_SYSTEM,
-                     narrative_prompt(comp, opp, decision, vc_role, required_roles))
+                     narrative_prompt(comp, opp, decision, vc_role, required_roles,
+                                      opener=opener))
     if not isinstance(out, dict):
         out = {}
     reasons = out.get("match_reason", [])
@@ -759,7 +776,8 @@ def main():
             idx, row = item
             g = generate_narrative(chat_client, chat_models,
                                    companies.loc[row["_i"]], opps.loc[row["_j"]],
-                                   row["decision"], row["_role"], row["_required"])
+                                   row["decision"], row["_role"], row["_required"],
+                                   opener=NARRATIVE_OPENERS[idx % len(NARRATIVE_OPENERS)])
             done[0] += 1
             if done[0] % 25 == 0 or done[0] == len(out_rows):
                 print(f"  {done[0]}/{len(out_rows)}", flush=True)
