@@ -278,9 +278,13 @@ def cap_tier(tier: str, cap: str) -> str:
     return tier if TIER_ORDER.index(tier) >= TIER_ORDER.index(cap) else cap
 
 
-def decide(final: float, gate: str, human: str, gated: bool) -> str:
+def decide(final: float, gate: str, human: str, gated: bool,
+           light: bool = False) -> str:
     """Six-tier decision. Analyst verdicts outrank the gate; the gate outranks
-    the score; ungated pairs cannot claim the top two tiers."""
+    the score. Depth of vetting bounds the tier: a single-vote (light) positive
+    caps at "Potential Match" - that tier MEANS positively indicated but not
+    fully vetted - and an unexamined pair cannot exceed it either. Only the
+    full multi-vote gate can award Good Match and above."""
     if human == "Disagree":
         return "Poor Match"
     tier = tier_for(final)
@@ -289,12 +293,14 @@ def decide(final: float, gate: str, human: str, gated: bool) -> str:
         return tier if TIER_ORDER.index(tier) <= TIER_ORDER.index("Good Match") else "Good Match"
     if gate == "No":
         return "Weak Match" if TIER_ORDER.index(tier) < TIER_ORDER.index("Weak Match") else tier
+    if gate in ("Partial", "Direct", "Yes") and light:
+        return ("Potential Match"
+                if TIER_ORDER.index(tier) < TIER_ORDER.index("Potential Match") else tier)
     if gate == "Partial":
         return "Strong Match" if tier == "Excellent Match" else tier
     if gate in ("Direct", "Yes"):
         return tier
-    # Ungated pairs were never examined by the AI gate: precision over recall
-    # means an unvetted pair is at most a "Potential Match", whatever its score.
+    # never examined at all
     return "Potential Match" if TIER_ORDER.index(tier) < TIER_ORDER.index("Potential Match") else tier
 
 
@@ -306,7 +312,8 @@ def confidence_score(comp_len, opp_len, class_conf, components, gate_agreement) 
     agreement = 1.0 - min(1.0, float(vals.std()) * 2.0)
     if "/" in str(gate_agreement):
         k, n = gate_agreement.split("/")
-        vote = int(k) / max(1, int(n))
+        # a single-vote verdict is weak evidence, not unanimity
+        vote = 0.55 if int(n) <= 1 else int(k) / max(1, int(n))
     else:
         vote = 0.5
     score = 0.30 * completeness + 0.25 * float(class_conf) + 0.25 * agreement + 0.20 * vote
@@ -653,6 +660,7 @@ def main():
     prior = load_prior_verdicts()
     df["gate"] = ""
     df["gate_agreement"] = ""
+    df["gate_depth"] = ""
     todo = df[df["rank_for_opp"] <= args.top_n]
     print(f"Gate: validating {len(todo)} pairs ({args.gpt_votes}-vote)...")
 
@@ -669,6 +677,29 @@ def main():
         for idx, (fit, conf, expl, model, agree) in ex.map(_gate, list(todo.iterrows())):
             df.at[idx, "gate"] = fit
             df.at[idx, "gate_agreement"] = agree
+            df.at[idx, "gate_depth"] = "full"
+
+    # Light gate for every remaining EXPORTED row (single vote): without this,
+    # the long tail was never examined and sat in "Potential Match", which reads
+    # as an endorsement. Every row the file ships now carries a real verdict.
+    light = df[(df["rank"] <= args.narrative_top) & (df["gate"] == "")]
+    if len(light):
+        print(f"Light gate (1-vote) for {len(light)} remaining exported rows...")
+
+        def _light(item):
+            idx, row = item
+            lines = [l for p, l in exemplar_pairs
+                     if p != (row["company_name"], row["opportunity_name"])][-8:]
+            return idx, gpt_validate(chat_client, chat_models,
+                                     companies.loc[row["_i"]], opps.loc[row["_j"]],
+                                     votes=1, escalate=False,
+                                     exemplars="\n".join(lines))
+
+        with ThreadPoolExecutor(max_workers=args.workers) as ex:
+            for idx, (fit, conf, expl, model, agree) in ex.map(_light, list(light.iterrows())):
+                df.at[idx, "gate"] = fit
+                df.at[idx, "gate_agreement"] = agree
+                df.at[idx, "gate_depth"] = "light"
 
     labels = [{"ts": datetime.now(timezone.utc).isoformat(),
                "company": r.company_name, "opportunity": r.opportunity_name,
@@ -694,7 +725,8 @@ def main():
     # iterrows, not itertuples: underscore-prefixed helper columns are renamed
     # positionally by itertuples and become unreachable by name.
     for _, r in df.iterrows():
-        d = decide(r["final_score"], r["gate"], r["human_verdict"], bool(r["gate"]))
+        d = decide(r["final_score"], r["gate"], r["human_verdict"], bool(r["gate"]),
+                   light=(r["gate_depth"] == "light"))
         comps = [r["sector_similarity"], r["profile_similarity"], r["product_similarity"],
                  r["value_chain_score"], r["investment_readiness_score"]]
         c = confidence_score(r["_comp_len"], 1500, r["_class_conf"], comps,

@@ -331,6 +331,10 @@ def test_v3_decide_hierarchy():
     assert v3.decide(0.2, "No", "Agree", True) == "Good Match"  # analyst floor
     assert v3.decide(0.9, "", "Disagree", False) == "Poor Match"  # analyst kill
     assert v3.decide(0.9, "", "", False) == "Potential Match"   # unvetted ceiling
+    # a single-vote (light) positive caps at Potential; light No still Weak
+    assert v3.decide(0.9, "Partial", "", True, light=True) == "Potential Match"
+    assert v3.decide(0.9, "No", "", True, light=True) == "Weak Match"
+    assert v3.decide(0.3, "Partial", "", True, light=True) == "Weak Match"
 
 
 def test_v3_confidence_bounds():
