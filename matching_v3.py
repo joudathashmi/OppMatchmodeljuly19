@@ -454,6 +454,15 @@ def narrative_prompt(comp, opp, decision, vc_role, required_roles) -> str:
 already made: "{decision}". Company value-chain role: {vc_role or 'unknown'};
 the opportunity needs: {', '.join(required_roles or ['unknown'])}.
 
+STYLE RULES (violating any is a defect):
+- NEVER use these words/phrases: "expertise in", "leveraging", "leverage",
+  "strong partner", "reliable supplier", "aligns well", "well-positioned",
+  "proven track record", "extensive experience". Say what the company DOES
+  and MAKES instead of characterizing its expertise.
+- Ground every claim in the texts: name products, value-chain stages,
+  materials, and market facts. A sentence that could be pasted into another
+  company's assessment unchanged must be rewritten.
+
 Return STRICT JSON only:
 {{"strengths": "2-3 sentences: what genuinely matches, citing named products and value-chain stages",
   "risks": "2-3 sentences: concerns, missing capabilities, incompatibilities; be specific",
@@ -477,6 +486,26 @@ OPPORTUNITY
 """
 
 
+LOCALIZATION_MENU = ["Greenfield manufacturing", "Regional assembly",
+                     "Joint venture", "Licensing and technology transfer",
+                     "Supplier localization", "Distribution partnership",
+                     "Not recommended"]
+
+
+def normalize_localization(value: str, decision: str) -> str:
+    """Coerce a free-text localization answer onto the fixed menu. The model
+    occasionally answers with something else (e.g. a value-chain role); an
+    off-menu value falls back deterministically by decision tier."""
+    v = str(value or "").strip().lower()
+    for item in LOCALIZATION_MENU:
+        if item.lower() == v or item.lower() in v or (v and v in item.lower()):
+            return item
+    if "not recommend" in v:
+        return "Not recommended"
+    positive = decision in ("Excellent Match", "Strong Match", "Good Match")
+    return "Supplier localization" if positive else "Not recommended"
+
+
 def generate_narrative(client, models, comp, opp, decision, vc_role, required_roles):
     out = _chat_json(client, models, NARRATIVE_SYSTEM,
                      narrative_prompt(comp, opp, decision, vc_role, required_roles))
@@ -490,7 +519,8 @@ def generate_narrative(client, models, comp, opp, decision, vc_role, required_ro
         "strengths": str(out.get("strengths", "")).strip(),
         "risks": str(out.get("risks", "")).strip(),
         "recommended_engagement": str(out.get("recommended_engagement", "")).strip(),
-        "suggested_localization_model": str(out.get("suggested_localization_model", "")).strip(),
+        "suggested_localization_model": normalize_localization(
+            out.get("suggested_localization_model", ""), decision),
         "match_reason": json.dumps(reasons, ensure_ascii=False) if reasons else "",
         "executive_summary": str(out.get("executive_summary", "")).strip(),
     }
