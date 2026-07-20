@@ -234,9 +234,17 @@ def compose_readiness(dims: dict):
 
 # ------------------------------- scoring model -------------------------------
 
+# Analyst decision (2026-07-20): value-chain, readiness, strategic and
+# localization scores are REPORTED but carry no weight in final_score - they
+# are GPT-inferred from thin profiles, so weighting them rewards data
+# availability rather than fit. The pair evidence (sector, profile, product)
+# does all the positive scoring; the GPT-inferred layer acts only through
+# subtractive penalties (which can never inflate a score) and the columns
+# remain in the output for the analyst's eye. Weights are normalized at
+# runtime, and any component can be re-enabled via --weights.
 DEFAULT_WEIGHTS = {
-    "sector": 0.20, "profile": 0.20, "product": 0.15, "value_chain": 0.15,
-    "readiness": 0.15, "strategic": 0.10, "localization": 0.05,
+    "sector": 0.20, "profile": 0.20, "product": 0.15, "value_chain": 0.0,
+    "readiness": 0.0, "strategic": 0.0, "localization": 0.0,
 }
 
 # false-positive penalties: (name, predicate(row) -> bool, factor)

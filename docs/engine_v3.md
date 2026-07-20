@@ -8,18 +8,25 @@ engineering, ranking and reasoning. Output: `Output/matching_output_v3.csv`.
 
 ## Scoring components
 
-| Component | Weight | Source |
-|---|---|---|
-| Sector fit | 20% | Hierarchical taxonomy similarity (below) |
-| Company profile | 20% | Embedding percentile + specificity (v2) |
-| Products and services | 15% | Embedding percentile + specificity (v2) |
-| Value-chain compatibility | 15% | Role classification x compatibility matrix |
-| Investment readiness | 15% | 8 core dimensions, GPT-scored from the profile |
-| Strategic fit | 10% | JV/partnership/expansion/Vision-2030 dimensions |
-| Localization potential | 5% | Localization/greenfield/GCC/export dimensions |
+Analyst decision (2026-07-20): the GPT-inferred company scores are REPORTED in
+the output but carry no weight in final_score. They are inferred from thin
+profile text, so weighting them rewards data availability rather than fit.
+Only pair evidence scores positively; the inferred layer acts through
+subtractive penalties (which can never inflate a score) and stays visible as
+columns for the analyst.
 
-Weights are configurable: `--weights my.json` overrides any subset; they are
-re-normalized to sum to 1.
+| Component | Weight (effective) | Role |
+|---|---|---|
+| Sector fit | 36.4% | Scores (hierarchical taxonomy similarity) |
+| Company profile | 36.4% | Scores (embedding percentile + specificity) |
+| Products and services | 27.3% | Scores (embedding percentile + specificity) |
+| Value-chain compatibility | 0% | Reported column + subtractive penalties only |
+| Investment readiness | 0% | Reported column only |
+| Strategic fit | 0% | Reported column only |
+| Localization potential | 0% | Reported column only |
+
+Weights are configurable: `--weights my.json` overrides any subset (any zeroed
+component can be re-enabled); they are re-normalized to sum to 1.
 
 ## Sector taxonomy
 

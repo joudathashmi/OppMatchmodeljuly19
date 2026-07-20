@@ -337,6 +337,13 @@ def test_v3_decide_hierarchy():
     assert v3.decide(0.3, "Partial", "", True, light=True) == "Weak Match"
 
 
+def test_v3_inferred_scores_carry_no_weight():
+    # analyst decision: GPT-inferred company scores are informational only
+    for k in ("value_chain", "readiness", "strategic", "localization"):
+        assert v3.DEFAULT_WEIGHTS[k] == 0.0
+    assert sum(v3.DEFAULT_WEIGHTS.values()) > 0  # pair evidence still scores
+
+
 def test_v3_confidence_bounds():
     c = v3.confidence_score(600, 1500, 0.8, [0.5, 0.55, 0.5, 0.6, 0.5], "3/3")
     assert 0 <= c <= 100 and v3.confidence_label(c) in ("High", "Medium", "Low")
