@@ -788,16 +788,26 @@ def main():
                 for k, v in g.items():
                     out_rows.at[idx, k] = v
 
-    # Ranking orientation (analyst decision 2026-07-21): rank is PER
-    # OPPORTUNITY - for each opportunity, its candidate companies rank 1..n by
-    # final_score. The file is grouped by opportunity (best-served opportunity
-    # first), companies high-to-low inside each block, so every block reads as
-    # that opportunity's ranked shortlist.
-    out_rows["rank"] = (out_rows.groupby("opportunity_id")["final_score"]
-                        .rank(method="first", ascending=False).astype(int))
-    out_rows["_best"] = out_rows.groupby("opportunity_id")["final_score"].transform("max")
-    out = out_rows.sort_values(["_best", "opportunity_id", "rank"],
-                               ascending=[False, True, True])[COLUMNS]
+    # Engagement guidance only where engagement makes sense (analyst decision
+    # 2026-07-21): rejected rows keep their risks and summary (the why-not) but
+    # carry no engagement plan.
+    rejected = out_rows["decision"].isin(["Weak Match", "Poor Match"])
+    out_rows.loc[rejected, "recommended_engagement"] = ""
+    out_rows.loc[rejected, "suggested_localization_model"] = "Not recommended"
+
+    # Ranking (analyst decisions 2026-07-21): rank is PER OPPORTUNITY and
+    # expresses PURSUE PRIORITY - decision tier first, then final_score - so a
+    # vetted Strong Match always outranks a higher-scoring but gate-rejected
+    # Weak Match inside its block. Blocks are ordered by their best row.
+    out_rows["_tier"] = out_rows["decision"].map({t: i for i, t in enumerate(TIER_ORDER)})
+    out_rows = out_rows.sort_values(["opportunity_id", "_tier", "final_score"],
+                                    ascending=[True, True, False])
+    out_rows["rank"] = out_rows.groupby("opportunity_id").cumcount() + 1
+    lead = out_rows[out_rows["rank"] == 1].set_index("opportunity_id")
+    out_rows["_lead_tier"] = out_rows["opportunity_id"].map(lead["_tier"])
+    out_rows["_lead_score"] = out_rows["opportunity_id"].map(lead["final_score"])
+    out = out_rows.sort_values(["_lead_tier", "_lead_score", "opportunity_id", "rank"],
+                               ascending=[True, False, True, True])[COLUMNS]
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
     out.to_csv(OUTPUT_CSV, index=False)
 
