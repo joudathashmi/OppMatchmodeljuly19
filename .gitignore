@@ -30,3 +30,4 @@ strategicinvestor*/
 _run_output.log
 Output/*.csv
 Output/*.json
+Output/*.md
