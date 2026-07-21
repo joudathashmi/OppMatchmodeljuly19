@@ -277,25 +277,35 @@ TIER_ORDER = [t for _, t in TIERS]
 VETTED_TIERS = ("Excellent Match", "Strong Match", "Good Match")
 
 
-def match_type(decision: str, vc_score: float, loc_model: str) -> str:
+SUPPLIER_ROLES = ("Component Supplier", "Raw Material Supplier", "Distributor")
+BUILDER_ROLES = ("OEM", "Contract Manufacturer", "System Integrator",
+                 "Technology Provider")
+
+
+def match_type(decision: str, vc_score: float, loc_model: str,
+               role: str = "") -> str:
     """What KIND of lead this is - the label an IPA actually acts on.
 
     'Excellent/Strong Match' says how good the fit is; match_type says what
-    the fit IS: an anchor who could build the opportunity, a JV partner, a
-    supplier to localize, or background ecosystem. Derived deterministically
-    from the value-chain compatibility and the localization model so it can be
-    recomputed from the output file alone."""
+    the fit IS. The company's value-chain ROLE is the primary discriminator
+    (an independent review found the previous threshold-only version collapsed
+    to 'JV partner' for nearly every vetted row): supplier-type roles are
+    supplier-localization plays regardless of ambition, builder-type roles are
+    JV material, and anchor still demands role-exact fit plus an Excellent
+    verdict. Derived deterministically so the verifier can recompute it."""
     if decision in ("Weak Match", "Poor Match"):
         return "Not a target"
     # Anchor demands BOTH role-exact value-chain fit AND an Excellent verdict
     # (only the full gate or an analyst approval can produce Excellent).
-    # Role-name equality alone is too weak: an industrial valve maker whose
-    # role string matches "OEM" is not an anchor for a medical-device build.
     if vc_score >= 0.95 and decision == "Excellent Match":
         return "Anchor candidate"
-    if loc_model == "Joint venture" or vc_score >= 0.60:
+    if role in SUPPLIER_ROLES or loc_model in ("Supplier localization",
+                                               "Distribution partnership"):
+        return "Supplier localization"
+    if loc_model == "Joint venture" or (role in BUILDER_ROLES and vc_score >= 0.50) \
+            or vc_score >= 0.70:
         return "JV partner"
-    if loc_model in ("Supplier localization", "Distribution partnership") or vc_score >= 0.30:
+    if vc_score >= 0.30:
         return "Supplier localization"
     return "Ecosystem player"
 
@@ -348,9 +358,15 @@ def decide(final: float, gate: str, human: str, gated: bool,
     return "Potential Match" if TIER_ORDER.index(tier) < TIER_ORDER.index("Potential Match") else tier
 
 
-def confidence_score(comp_len, opp_len, class_conf, components, gate_agreement) -> int:
+def confidence_score(comp_len, opp_len, class_conf, components, gate_agreement,
+                     sector_sim: float = 1.0, penalized: bool = False) -> int:
     """0-100. Data completeness, classification certainty, cross-component
-    agreement, and gate vote agreement."""
+    agreement, and gate vote agreement - MINUS real uncertainty signals.
+
+    An independent review found the raw formula wallpapered the pursue list
+    at 85-95: everything scored high because the inputs are mostly present.
+    Cross-family sector jumps and fired penalties are genuine reasons to be
+    less certain, so they now deduct."""
     completeness = min(1.0, comp_len / 600) * 0.5 + min(1.0, opp_len / 1500) * 0.5
     vals = np.array(components, dtype=float)
     agreement = 1.0 - min(1.0, float(vals.std()) * 2.0)
@@ -361,6 +377,10 @@ def confidence_score(comp_len, opp_len, class_conf, components, gate_agreement) 
     else:
         vote = 0.5
     score = 0.30 * completeness + 0.25 * float(class_conf) + 0.25 * agreement + 0.20 * vote
+    if float(sector_sim) < 0.5:   # cross-family inference is inherently shakier
+        score -= 0.15
+    if penalized:                 # a fired penalty flags structural doubt
+        score -= 0.10
     return int(round(100 * min(1.0, max(0.0, score))))
 
 
@@ -605,7 +625,8 @@ COLUMNS = [
     "company_sector", "normalized_sector", "opportunity_sector",
     "sector_similarity", "profile_similarity", "product_similarity",
     "profile_match_reason", "product_match_reason",
-    "value_chain_score", "investment_readiness_score", "strategic_fit_score",
+    "value_chain_role", "value_chain_score",
+    "investment_readiness_score", "strategic_fit_score",
     "localization_score", "ai_score", "confidence_score", "decision",
     "match_type", "final_score", "rank", "strengths", "risks",
     "recommended_engagement", "suggested_localization_model", "match_reason",
@@ -614,7 +635,8 @@ COLUMNS = [
 
 
 def write_summary(out: pd.DataFrame, companies: pd.DataFrame,
-                  opps: pd.DataFrame, path: str = "Output/matching_summary_v3.md"):
+                  opps: pd.DataFrame, opp_enrich: dict | None = None,
+                  path: str = "Output/matching_summary_v3.md"):
     """One-page dataset verdict an investment manager reads first."""
     comp_secs = companies["Sector"].value_counts()
     opp_secs = opps["Sector"].value_counts()
@@ -643,6 +665,15 @@ def write_summary(out: pd.DataFrame, companies: pd.DataFrame,
     ]
     for _, r in statuses.iterrows():
         lines.append(f"- {r['opportunity_name']}: {r['opportunity_status']}")
+    if opp_enrich:
+        lines += ["", "## Anchor sourcing criteria (for external prospecting)", ""]
+        no_anchor = statuses[statuses["opportunity_status"] != "Anchor candidate identified"]
+        for _, r in no_anchor.iterrows():
+            oe = opp_enrich.get(r["opportunity_name"], {})
+            roles = ", ".join(oe.get("required_roles", []) or ["-"])
+            lines.append(f"- {r['opportunity_name']}: seek a {roles} in "
+                         f"{oe.get('normalized_sector', '-')}"
+                         + (f"; stage: {oe.get('stage_needed')}" if oe.get("stage_needed") else ""))
     lines += ["", "## Pursue list", ""]
     for _, r in pursue.iterrows():
         lines.append(f"- {r['company_name']} -> {r['opportunity_name']}: "
@@ -841,7 +872,9 @@ def main():
         comps = [r["sector_similarity"], r["profile_similarity"], r["product_similarity"],
                  r["value_chain_score"], r["investment_readiness_score"]]
         c = confidence_score(r["_comp_len"], 1500, r["_class_conf"], comps,
-                             r["gate_agreement"])
+                             r["gate_agreement"],
+                             sector_sim=float(r["sector_similarity"]),
+                             penalized=bool(r["_penalties"]))
         decisions.append(d)
         confidences.append(f"{c} ({confidence_label(c)})")
         ai_scores.append(1 if TIER_ORDER.index(d) <= TIER_ORDER.index("Good Match") else 0)
@@ -886,9 +919,10 @@ def main():
     # the tier says how good the fit is, match_type says what the fit IS, and
     # opportunity_status restores abstention - an opportunity with no vetted
     # target says so instead of crowning the least-bad supplier.
+    out_rows["value_chain_role"] = out_rows["_role"]
     out_rows["match_type"] = [
         match_type(r["decision"], float(r["value_chain_score"]),
-                   r["suggested_localization_model"])
+                   r["suggested_localization_model"], r["_role"])
         for _, r in out_rows.iterrows()]
     status_by_opp = {
         oid: opportunity_status(list(zip(g["decision"], g["match_type"])))
@@ -911,7 +945,7 @@ def main():
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
     out.to_csv(OUTPUT_CSV, index=False)
 
-    summary_path = write_summary(out, companies, opps)
+    summary_path = write_summary(out, companies, opps, opp_enrich)
     print(f"Dataset verdict written to {summary_path}")
 
     dist = out["decision"].value_counts().to_dict()

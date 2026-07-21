@@ -164,7 +164,8 @@ def main():
     # ---- layer 6: match_type and opportunity_status from the file itself ----
     mt_bad = sum(1 for r in out.itertuples()
                  if v3.match_type(r.decision, float(r.value_chain_score),
-                                  r.suggested_localization_model) != r.match_type)
+                                  r.suggested_localization_model,
+                                  getattr(r, "value_chain_role", "")) != r.match_type)
     st = {oid: v3.opportunity_status(list(zip(g["decision"], g["match_type"])))
           for oid, g in out.groupby("opportunity_id")}
     st_bad = sum(1 for r in out.itertuples()
