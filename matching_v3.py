@@ -530,9 +530,41 @@ NARRATIVE_OPENERS = [
     "open fields with the demand, market or localization context",
 ]
 
+# ASSIGNED variation beats requested variation: prompts asking the model to
+# "vary" converge on a favorite anyway ("Initiate a technical..." held 39% of
+# engagement lines; "No evidence of..." opened 21% of risks). Each row is
+# therefore ASSIGNED its engagement verb and its leading risk lens by index,
+# which bounds any single frame to len(bank) rotation.
+ENGAGEMENT_VERBS = ["Commission", "Broker", "Convene", "Qualify",
+                    "Structure", "Pilot", "Scope", "Invite"]
+RISK_LENSES = [
+    "the certification or regulatory gap",
+    "the business-model or value-chain mismatch",
+    "the missing product line or capability",
+    "the market, footprint or geography constraint",
+]
+
+# Deterministic terminology glossary applied to every generated field: model
+# text must use official names (a generated "Saudi FDA" reached a deliverable;
+# the regulator is the SFDA).
+TERM_GLOSSARY = [
+    (re.compile(r"\bthe Saudi FDA\b"), "the SFDA"),
+    (re.compile(r"\bSaudi FDA\b"), "SFDA"),
+    (re.compile(r"\bSaudi Arabian FDA\b"), "SFDA"),
+    (re.compile(r"\bSaudi Food and Drug Authority\b"), "Saudi Food and Drug Authority (SFDA)"),
+    (re.compile(r"\bSaudi Food and Drug Authority \(SFDA\) \(SFDA\)"), "Saudi Food and Drug Authority (SFDA)"),
+]
+
+
+def normalize_terminology(text: str) -> str:
+    out = str(text or "")
+    for pat, repl in TERM_GLOSSARY:
+        out = pat.sub(repl, out)
+    return out
+
 
 def narrative_prompt(comp, opp, decision, vc_role, required_roles,
-                     opener: str = "") -> str:
+                     opener: str = "", verb: str = "", risk_lens: str = "") -> str:
     opener_line = opener or "vary the opening of every field naturally"
     return f"""Write the investment assessment for this pairing. The decision is
 already made: "{decision}". Company value-chain role: {vc_role or 'unknown'};
@@ -551,8 +583,8 @@ STYLE RULES (violating any is a defect):
 
 Return STRICT JSON only:
 {{"strengths": "2-3 sentences: what genuinely matches, citing named products and value-chain stages. Do NOT open with the company name - open with the capability or the requirement it meets",
-  "risks": "2-3 sentences naming the decisive gaps through DIFFERENT lenses (capability, certification/regulatory, business model, geography/market). Do NOT open with 'The opportunity requires', 'The company', or 'No evidence' - state the gap as a concrete fact instead (e.g. 'X has never assembled server-grade hardware; its lines run Y')",
-  "recommended_engagement": "1-2 sentences in IMPERATIVE voice, starting with a specific action verb of your own choosing - VARY the verb, do not default to 'Pair' - naming the counterpart entities and the mechanism. NEVER begin with 'Invest Saudi'",
+  "risks": "2-3 sentences naming the decisive gaps through DIFFERENT lenses (capability, certification/regulatory, business model, geography/market). OPEN with {{RISK_LENS}}, stated as a concrete fact about this company. Do NOT open with 'The opportunity requires', 'The company', or 'No evidence'",
+  "recommended_engagement": "1-2 sentences in IMPERATIVE voice. The FIRST WORD must be '{{VERB}}'. Name the counterpart entities and the mechanism. NEVER begin with 'Invest Saudi'",
   "suggested_localization_model": "one of: Greenfield manufacturing | Regional assembly | Joint venture | Licensing and technology transfer | Supplier localization | Distribution partnership | Not recommended",
   "match_reason": ["3 factual reasons, each citing a DIFFERENT kind of evidence (product fit, value-chain position, market/footprint). Each reason MUST name at least one specific product, material, stage, facility or figure from the texts AND tie it to a named requirement of the opportunity. Abstract connectors ('complements the needs', 'supports objectives', 'provides a foundation', 'demonstrates readiness') are defects; none may start with 'The company'", "...", "..."],
   "profile_match_reason": "1-2 sentences justifying the profile_similarity value: what in the company's overall profile (identity, scale, sectors served, footprint, track record) matches or fails to match THIS opportunity, citing profile facts. Populated for every row",
@@ -571,7 +603,7 @@ OPPORTUNITY
   Description: {opp['What is the opportunity description?']}
   Highlights: {opp['What are the investment highlights?']}
   Required materials: {opp['What materials are involved or required in the project?']}
-"""
+""".replace("{VERB}", verb or "Commission").replace("{RISK_LENS}", risk_lens or "the decisive capability gap")
 
 
 LOCALIZATION_MENU = ["Greenfield manufacturing", "Regional assembly",
@@ -595,26 +627,32 @@ def normalize_localization(value: str, decision: str) -> str:
 
 
 def generate_narrative(client, models, comp, opp, decision, vc_role,
-                       required_roles, opener: str = ""):
+                       required_roles, opener: str = "", verb: str = "",
+                       risk_lens: str = ""):
     out = _chat_json(client, models, NARRATIVE_SYSTEM,
                      narrative_prompt(comp, opp, decision, vc_role, required_roles,
-                                      opener=opener))
+                                      opener=opener, verb=verb, risk_lens=risk_lens))
     if not isinstance(out, dict):
         out = {}
     reasons = out.get("match_reason", [])
     if not isinstance(reasons, list):
         reasons = [str(reasons)]
     reasons = [str(r).strip() for r in reasons if str(r).strip()][:3]
+    reasons = [normalize_terminology(r) for r in reasons]
     return {
-        "strengths": str(out.get("strengths", "")).strip(),
-        "risks": str(out.get("risks", "")).strip(),
-        "recommended_engagement": str(out.get("recommended_engagement", "")).strip(),
+        "strengths": normalize_terminology(str(out.get("strengths", "")).strip()),
+        "risks": normalize_terminology(str(out.get("risks", "")).strip()),
+        "recommended_engagement": normalize_terminology(
+            str(out.get("recommended_engagement", "")).strip()),
         "suggested_localization_model": normalize_localization(
             out.get("suggested_localization_model", ""), decision),
         "match_reason": json.dumps(reasons, ensure_ascii=False) if reasons else "",
-        "profile_match_reason": str(out.get("profile_match_reason", "")).strip(),
-        "product_match_reason": str(out.get("product_match_reason", "")).strip(),
-        "executive_summary": str(out.get("executive_summary", "")).strip(),
+        "profile_match_reason": normalize_terminology(
+            str(out.get("profile_match_reason", "")).strip()),
+        "product_match_reason": normalize_terminology(
+            str(out.get("product_match_reason", "")).strip()),
+        "executive_summary": normalize_terminology(
+            str(out.get("executive_summary", "")).strip()),
     }
 
 # ----------------------------------- main -----------------------------------
@@ -897,7 +935,9 @@ def main():
             g = generate_narrative(chat_client, chat_models,
                                    companies.loc[row["_i"]], opps.loc[row["_j"]],
                                    row["decision"], row["_role"], row["_required"],
-                                   opener=NARRATIVE_OPENERS[idx % len(NARRATIVE_OPENERS)])
+                                   opener=NARRATIVE_OPENERS[idx % len(NARRATIVE_OPENERS)],
+                                   verb=ENGAGEMENT_VERBS[idx % len(ENGAGEMENT_VERBS)],
+                                   risk_lens=RISK_LENSES[idx % len(RISK_LENSES)])
             done[0] += 1
             if done[0] % 25 == 0 or done[0] == len(out_rows):
                 print(f"  {done[0]}/{len(out_rows)}", flush=True)

@@ -370,6 +370,14 @@ def test_v3_opportunity_status_restores_abstention():
         == "Anchor candidate identified"
 
 
+def test_v3_terminology_glossary():
+    fix = v3.normalize_terminology
+    assert fix("per Saudi FDA rules") == "per SFDA rules"
+    assert fix("the Saudi FDA requires") == "the SFDA requires"
+    assert fix("Saudi Food and Drug Authority approval") == "Saudi Food and Drug Authority (SFDA) approval"
+    assert fix("already SFDA compliant") == "already SFDA compliant"  # no double-fix
+
+
 def test_v3_confidence_bounds():
     c = v3.confidence_score(600, 1500, 0.8, [0.5, 0.55, 0.5, 0.6, 0.5], "3/3")
     assert 0 <= c <= 100 and v3.confidence_label(c) in ("High", "Medium", "Low")
