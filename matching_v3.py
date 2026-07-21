@@ -788,11 +788,16 @@ def main():
                 for k, v in g.items():
                     out_rows.at[idx, k] = v
 
-    # Deliverable ordering: best decisions first, then score - the file opens
-    # on the recommendations, not on an alphabetical wall of Potential rows.
-    out_rows["_tier"] = out_rows["decision"].map({t: i for i, t in enumerate(TIER_ORDER)})
-    out = out_rows.sort_values(["_tier", "final_score"],
-                               ascending=[True, False])[COLUMNS]
+    # Ranking orientation (analyst decision 2026-07-21): rank is PER
+    # OPPORTUNITY - for each opportunity, its candidate companies rank 1..n by
+    # final_score. The file is grouped by opportunity (best-served opportunity
+    # first), companies high-to-low inside each block, so every block reads as
+    # that opportunity's ranked shortlist.
+    out_rows["rank"] = (out_rows.groupby("opportunity_id")["final_score"]
+                        .rank(method="first", ascending=False).astype(int))
+    out_rows["_best"] = out_rows.groupby("opportunity_id")["final_score"].transform("max")
+    out = out_rows.sort_values(["_best", "opportunity_id", "rank"],
+                               ascending=[False, True, True])[COLUMNS]
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
     out.to_csv(OUTPUT_CSV, index=False)
 

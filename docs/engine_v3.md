@@ -90,6 +90,13 @@ strategic_fit_score, localization_score, ai_score, confidence_score, decision,
 final_score, rank, strengths, risks, recommended_engagement,
 suggested_localization_model, match_reason, executive_summary.
 
+Ordering and rank: `rank` is per OPPORTUNITY - for each opportunity its
+candidate companies rank 1..n by final_score, and the file is grouped into
+opportunity blocks (best-served opportunity first). Within a block, rank
+follows score while `decision` carries the verdict, so a high-scoring but
+gate-rejected company can hold rank 2 as a Weak Match: read rank and decision
+together.
+
 Narratives are balanced by construction: strengths, risks (including missing
 capabilities), recommended engagement, a localization model from a fixed menu,
 three factual match reasons, and an executive summary. Stock-phrase vocabulary
