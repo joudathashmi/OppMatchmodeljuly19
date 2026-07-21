@@ -812,7 +812,10 @@ def main():
     labels = [{"ts": datetime.now(timezone.utc).isoformat(),
                "company": r.company_name, "opportunity": r.opportunity_name,
                "decision": r.gate, "confidence": 0.0, "agreement": r.gate_agreement,
-               "model": "v3", "votes": args.gpt_votes, "rubric": RUBRIC_HASH,
+               "model": "v3",
+               "votes": (int(str(r.gate_agreement).split("/")[1])
+                         if "/" in str(r.gate_agreement) else args.gpt_votes),
+               "rubric": RUBRIC_HASH,
                "final_score": r.final_score, "embed_mode": mode}
               for r in df.itertuples() if r.gate]
     if labels:
