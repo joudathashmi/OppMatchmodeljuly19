@@ -81,13 +81,14 @@ presented as a vetted one. `ai_score` is 1 for the top three tiers.
 0-100 with a High/Medium/Low label: 30% data completeness, 25% classification
 certainty, 25% cross-component agreement, 20% gate vote agreement.
 
-## Output columns (27)
+## Output columns (29)
 
-company_id, company_name, opportunity_id, opportunity_name, company_sector,
+company_id, company_name, opportunity_id, opportunity_name,
+opportunity_status, company_sector,
 normalized_sector, opportunity_sector, sector_similarity, profile_similarity,
 product_similarity, profile_match_reason, product_match_reason,
 value_chain_score, investment_readiness_score,
-strategic_fit_score, localization_score, ai_score, confidence_score, decision,
+strategic_fit_score, localization_score, ai_score, confidence_score, decision, match_type,
 final_score, rank, strengths, risks, recommended_engagement,
 suggested_localization_model, match_reason, executive_summary.
 
@@ -109,3 +110,17 @@ Embeddings and their cache are reused from v2. Company and opportunity
 classifications are cached by text hash, so repeated runs pay only for the
 gate and narratives. Reference run: 61 companies x 12 opportunities in about
 five minutes with 8 workers.
+
+## Match type, abstention and the dataset verdict (independent-review fixes)
+
+- `match_type` says what the fit IS, not how good it is: Anchor candidate
+  (role-exact value-chain fit AND an Excellent verdict), JV partner, Supplier
+  localization, Ecosystem player, or Not a target. Role-name equality alone
+  never makes an anchor.
+- `opportunity_status` restores abstention at block level: Anchor candidate
+  identified / No anchor in universe, JV and supplier options only / No viable
+  target in current universe.
+- Every run writes Output/matching_summary_v3.md: the dataset verdict (roster
+  composition vs opportunity sectors, anchors found, per-opportunity status,
+  pursue list) with the standing recommendation to source anchor prospects
+  externally per vertical.

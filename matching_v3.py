@@ -274,6 +274,42 @@ TIERS = [(0.72, "Excellent Match"), (0.60, "Strong Match"), (0.50, "Good Match")
          (0.38, "Potential Match"), (0.26, "Weak Match"), (0.0, "Poor Match")]
 TIER_ORDER = [t for _, t in TIERS]
 
+VETTED_TIERS = ("Excellent Match", "Strong Match", "Good Match")
+
+
+def match_type(decision: str, vc_score: float, loc_model: str) -> str:
+    """What KIND of lead this is - the label an IPA actually acts on.
+
+    'Excellent/Strong Match' says how good the fit is; match_type says what
+    the fit IS: an anchor who could build the opportunity, a JV partner, a
+    supplier to localize, or background ecosystem. Derived deterministically
+    from the value-chain compatibility and the localization model so it can be
+    recomputed from the output file alone."""
+    if decision in ("Weak Match", "Poor Match"):
+        return "Not a target"
+    # Anchor demands BOTH role-exact value-chain fit AND an Excellent verdict
+    # (only the full gate or an analyst approval can produce Excellent).
+    # Role-name equality alone is too weak: an industrial valve maker whose
+    # role string matches "OEM" is not an anchor for a medical-device build.
+    if vc_score >= 0.95 and decision == "Excellent Match":
+        return "Anchor candidate"
+    if loc_model == "Joint venture" or vc_score >= 0.60:
+        return "JV partner"
+    if loc_model in ("Supplier localization", "Distribution partnership") or vc_score >= 0.30:
+        return "Supplier localization"
+    return "Ecosystem player"
+
+
+def opportunity_status(block_rows: list) -> str:
+    """Honest per-opportunity verdict (restores v2's abstention capability).
+    block_rows: [(decision, match_type), ...] for one opportunity."""
+    vetted = [(d, m) for d, m in block_rows if d in VETTED_TIERS]
+    if not vetted:
+        return "No viable target in current universe"
+    if any(m == "Anchor candidate" for _, m in vetted):
+        return "Anchor candidate identified"
+    return "No anchor in universe - JV/supplier options only"
+
 
 def tier_for(score: float) -> str:
     for cut, name in TIERS:
@@ -565,14 +601,56 @@ def generate_narrative(client, models, comp, opp, decision, vc_role,
 
 COLUMNS = [
     "company_id", "company_name", "opportunity_id", "opportunity_name",
+    "opportunity_status",
     "company_sector", "normalized_sector", "opportunity_sector",
     "sector_similarity", "profile_similarity", "product_similarity",
     "profile_match_reason", "product_match_reason",
     "value_chain_score", "investment_readiness_score", "strategic_fit_score",
     "localization_score", "ai_score", "confidence_score", "decision",
-    "final_score", "rank", "strengths", "risks", "recommended_engagement",
-    "suggested_localization_model", "match_reason", "executive_summary",
+    "match_type", "final_score", "rank", "strengths", "risks",
+    "recommended_engagement", "suggested_localization_model", "match_reason",
+    "executive_summary",
 ]
+
+
+def write_summary(out: pd.DataFrame, companies: pd.DataFrame,
+                  opps: pd.DataFrame, path: str = "Output/matching_summary_v3.md"):
+    """One-page dataset verdict an investment manager reads first."""
+    comp_secs = companies["Sector"].value_counts()
+    opp_secs = opps["Sector"].value_counts()
+    statuses = out.drop_duplicates("opportunity_id")[["opportunity_name", "opportunity_status"]]
+    n_anchor = int((statuses["opportunity_status"] == "Anchor candidate identified").sum())
+    n_none = int((statuses["opportunity_status"] == "No viable target in current universe").sum())
+    pursue = out[out["ai_score"] == 1]
+    lines = [
+        "# Matching run: dataset verdict", "",
+        f"Companies: {companies['company_name'].nunique()} "
+        f"({', '.join(f'{k} {v}' for k, v in comp_secs.items())})",
+        f"Opportunities: {len(opps)} "
+        f"({', '.join(f'{k} {v}' for k, v in opp_secs.items())})", "",
+        "## The core finding", "",
+        f"The company universe is a supplier and industrial registry; the "
+        f"opportunities are builds in {', '.join(opp_secs.index)}. "
+        f"Anchor candidates identified: {n_anchor} of {len(opps)} opportunities. "
+        f"The vetted matches are JV-partner and supplier-localization plays, "
+        f"not anchor investors.", "",
+        "Recommendation: source anchor prospects externally per vertical "
+        "(telecom OEM/EMS players for the ICT hardware builds; imaging and "
+        "device OEMs for MedTech; API and biologics producers for pharma), "
+        "and use this roster as the local supply-chain and JV layer it "
+        "actually is.", "",
+        "## Per-opportunity status", "",
+    ]
+    for _, r in statuses.iterrows():
+        lines.append(f"- {r['opportunity_name']}: {r['opportunity_status']}")
+    lines += ["", "## Pursue list", ""]
+    for _, r in pursue.iterrows():
+        lines.append(f"- {r['company_name']} -> {r['opportunity_name']}: "
+                     f"{r['decision']}, {r['match_type']}, "
+                     f"score {r['final_score']}, confidence {r['confidence_score']}")
+    with open(path, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return path
 
 
 def main():
@@ -801,6 +879,19 @@ def main():
     out_rows.loc[rejected, "recommended_engagement"] = ""
     out_rows.loc[rejected, "suggested_localization_model"] = "Not recommended"
 
+    # Match type + honest per-opportunity status (independent-review fixes):
+    # the tier says how good the fit is, match_type says what the fit IS, and
+    # opportunity_status restores abstention - an opportunity with no vetted
+    # target says so instead of crowning the least-bad supplier.
+    out_rows["match_type"] = [
+        match_type(r["decision"], float(r["value_chain_score"]),
+                   r["suggested_localization_model"])
+        for _, r in out_rows.iterrows()]
+    status_by_opp = {
+        oid: opportunity_status(list(zip(g["decision"], g["match_type"])))
+        for oid, g in out_rows.groupby("opportunity_id")}
+    out_rows["opportunity_status"] = out_rows["opportunity_id"].map(status_by_opp)
+
     # Ranking (analyst decisions 2026-07-21): rank is PER OPPORTUNITY and
     # expresses PURSUE PRIORITY - decision tier first, then final_score - so a
     # vetted Strong Match always outranks a higher-scoring but gate-rejected
@@ -816,6 +907,9 @@ def main():
                                ascending=[True, False, True, True])[COLUMNS]
     os.makedirs(os.path.dirname(OUTPUT_CSV), exist_ok=True)
     out.to_csv(OUTPUT_CSV, index=False)
+
+    summary_path = write_summary(out, companies, opps)
+    print(f"Dataset verdict written to {summary_path}")
 
     dist = out["decision"].value_counts().to_dict()
     print(f"\nWrote {OUTPUT_CSV}: {len(out)} rows.")

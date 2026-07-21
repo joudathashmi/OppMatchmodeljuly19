@@ -344,6 +344,32 @@ def test_v3_inferred_scores_carry_no_weight():
     assert sum(v3.DEFAULT_WEIGHTS.values()) > 0  # pair evidence still scores
 
 
+def test_v3_match_type_classification():
+    # rejected rows are never targets, whatever their scores
+    assert v3.match_type("Weak Match", 0.9, "Joint venture") == "Not a target"
+    # anchor needs role-identical compatibility AND an Excellent verdict
+    assert v3.match_type("Excellent Match", 1.0, "Greenfield manufacturing") == "Anchor candidate"
+    assert v3.match_type("Strong Match", 1.0, "Greenfield manufacturing") == "JV partner"
+    # strong compatibility or an explicit JV model = JV partner
+    assert v3.match_type("Strong Match", 0.8, "Regional assembly") == "JV partner"
+    assert v3.match_type("Good Match", 0.5, "Joint venture") == "JV partner"
+    # supplier-grade compatibility = supplier localization
+    assert v3.match_type("Strong Match", 0.45, "Supplier localization") == "Supplier localization"
+
+
+def test_v3_opportunity_status_restores_abstention():
+    # no vetted rows -> honest abstention
+    assert v3.opportunity_status([("Potential Match", "JV partner"),
+                                  ("Weak Match", "Not a target")]) \
+        == "No viable target in current universe"
+    # vetted but supplier-only -> says there is no anchor
+    assert v3.opportunity_status([("Strong Match", "Supplier localization")]) \
+        == "No anchor in universe - JV/supplier options only"
+    # a real anchor is celebrated
+    assert v3.opportunity_status([("Excellent Match", "Anchor candidate")]) \
+        == "Anchor candidate identified"
+
+
 def test_v3_confidence_bounds():
     c = v3.confidence_score(600, 1500, 0.8, [0.5, 0.55, 0.5, 0.6, 0.5], "3/3")
     assert 0 <= c <= 100 and v3.confidence_label(c) in ("High", "Medium", "Low")
