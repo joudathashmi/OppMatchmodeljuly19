@@ -498,7 +498,9 @@ Return STRICT JSON only:
   "risks": "2-3 sentences naming the decisive gaps through DIFFERENT lenses (capability, certification/regulatory, business model, geography/market). Do NOT open with 'The opportunity requires', 'The company', or 'No evidence' - state the gap as a concrete fact instead (e.g. 'X has never assembled server-grade hardware; its lines run Y')",
   "recommended_engagement": "1-2 sentences in IMPERATIVE voice, starting with a specific action verb of your own choosing - VARY the verb, do not default to 'Pair' - naming the counterpart entities and the mechanism. NEVER begin with 'Invest Saudi'",
   "suggested_localization_model": "one of: Greenfield manufacturing | Regional assembly | Joint venture | Licensing and technology transfer | Supplier localization | Distribution partnership | Not recommended",
-  "match_reason": ["3 factual reasons, each citing a DIFFERENT kind of evidence (product fit, value-chain position, market/footprint); none may start with 'The company'", "...", "..."],
+  "match_reason": ["3 factual reasons, each citing a DIFFERENT kind of evidence (product fit, value-chain position, market/footprint). Each reason MUST name at least one specific product, material, stage, facility or figure from the texts AND tie it to a named requirement of the opportunity. Abstract connectors ('complements the needs', 'supports objectives', 'provides a foundation', 'demonstrates readiness') are defects; none may start with 'The company'", "...", "..."],
+  "profile_match_reason": "1-2 sentences justifying the profile_similarity value: what in the company's overall profile (identity, scale, sectors served, footprint, track record) matches or fails to match THIS opportunity, citing profile facts. Populated for every row",
+  "product_match_reason": "1-2 sentences justifying the product_similarity value: name the specific products/services that map to named opportunity requirements, or exactly which required products are missing. Populated for every row",
   "executive_summary": "2-3 sentences an investment manager reads first; balanced, specific, decisive. Do NOT open with the company name - open with the verdict logic or the decisive fact"}}
 
 COMPANY
@@ -554,6 +556,8 @@ def generate_narrative(client, models, comp, opp, decision, vc_role,
         "suggested_localization_model": normalize_localization(
             out.get("suggested_localization_model", ""), decision),
         "match_reason": json.dumps(reasons, ensure_ascii=False) if reasons else "",
+        "profile_match_reason": str(out.get("profile_match_reason", "")).strip(),
+        "product_match_reason": str(out.get("product_match_reason", "")).strip(),
         "executive_summary": str(out.get("executive_summary", "")).strip(),
     }
 
@@ -563,6 +567,7 @@ COLUMNS = [
     "company_id", "company_name", "opportunity_id", "opportunity_name",
     "company_sector", "normalized_sector", "opportunity_sector",
     "sector_similarity", "profile_similarity", "product_similarity",
+    "profile_match_reason", "product_match_reason",
     "value_chain_score", "investment_readiness_score", "strategic_fit_score",
     "localization_score", "ai_score", "confidence_score", "decision",
     "final_score", "rank", "strengths", "risks", "recommended_engagement",
@@ -766,7 +771,8 @@ def main():
     # narratives for the export slice
     out_rows = df[df["rank"] <= args.narrative_top].copy()
     for k in ["strengths", "risks", "recommended_engagement",
-              "suggested_localization_model", "match_reason", "executive_summary"]:
+              "suggested_localization_model", "match_reason", "executive_summary",
+              "profile_match_reason", "product_match_reason"]:
         out_rows[k] = ""
     if not args.no_narratives:
         print(f"Narratives for {len(out_rows)} rows...")

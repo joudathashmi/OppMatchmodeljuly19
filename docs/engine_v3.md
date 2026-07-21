@@ -81,11 +81,12 @@ presented as a vetted one. `ai_score` is 1 for the top three tiers.
 0-100 with a High/Medium/Low label: 30% data completeness, 25% classification
 certainty, 25% cross-component agreement, 20% gate vote agreement.
 
-## Output columns (25)
+## Output columns (27)
 
 company_id, company_name, opportunity_id, opportunity_name, company_sector,
 normalized_sector, opportunity_sector, sector_similarity, profile_similarity,
-product_similarity, value_chain_score, investment_readiness_score,
+product_similarity, profile_match_reason, product_match_reason,
+value_chain_score, investment_readiness_score,
 strategic_fit_score, localization_score, ai_score, confidence_score, decision,
 final_score, rank, strengths, risks, recommended_engagement,
 suggested_localization_model, match_reason, executive_summary.
